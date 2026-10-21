@@ -9,11 +9,19 @@ using static Sweetch.Core.Loc;
 
 namespace Sweetch.App.Actions;
 
-/// <summary>The Actions wheel: copy, move, copy path, terminal, floating shelf and share.</summary>
+/// <summary>The Actions wheel: watch, copy, move, copy path, terminal, floating shelf and share.</summary>
 internal static class Sweetchs
 {
     public static IReadOnlyList<Operation> Build(AppSettings settings, Action save) =>
     [
+        new AppAction("action.watch", T("Watch", "Смотреть"), Glyphs.Play, items =>
+        {
+            // One window per file; the player is not modal, so it can stay open next to other work.
+            var tools = new ToolLocator();
+            foreach (var item in items)
+                new PlayerWindow(null, [item], tools).Show();
+            return Task.CompletedTask;
+        }, T("with sound", "со звуком"), items => items.Count is > 0 and <= 4 && items.All(i => Formats.Video.Contains(i.Format) || Formats.Audio.Contains(i.Format))),
         new AppAction("action.copy", T("Copy", "Копировать"), Glyphs.Copy, items => CopyOrMoveAsync(items, move: false, settings, save), T("to folder…", "в папку…")),
         new AppAction("action.move", T("Move", "Переместить"), Glyphs.Move, items => CopyOrMoveAsync(items, move: true, settings, save), T("to folder…", "в папку…")),
         new AppAction("action.path", T("Copy path", "Копировать путь"), Glyphs.Link, CopyPathAsync),

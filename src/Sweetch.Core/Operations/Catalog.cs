@@ -53,6 +53,12 @@ public static class Catalog
         ImageEdit(ops, "image.flip", T("Mirror", "Отразить"), Glyphs.Flip, null, T("mirrored", "отражено"), img => img.Flop());
         ImageEdit(ops, "image.square", T("Square", "Квадрат"), Glyphs.Crop, T("crop", "обрезка"), T("square", "квадрат"), ImageBackend.CropSquare);
         ImageEdit(ops, "image.grayscale", T("Grayscale", "Оттенки серого"), Glyphs.Color, null, T("grayscale", "оттенки серого"), ImageBackend.Grayscale);
+        ops.Add(new PerFileOperation("image.relight", WheelKind.Tools, T("Light & color", "Свет и цвет"), Glyphs.Brightness, Formats.ImageInputs,
+            async (item, ctx, _) => [await OutputPaths.ProduceAsync(ctx.OutputDirFor(item.Path), $"{item.BaseName} ({T("edited", "обработано")})",
+                ImageBackend.OutputFormatFor(item.Format), tmp => ImageBackend.FilterAsync(item.Path, tmp, ImageBackend.OutputFormatFor(item.Format),
+                    Relight.Filter(ctx.Parameters), ctx.Settings.JpegQuality, ctx))],
+            subtitle: T("exposure, warmth", "экспозиция, теплота"))
+        { Requires = [ExternalTool.Ffmpeg], Parameters = Relight.Parameters() });
         ImageEdit(ops, "image.strip", T("No metadata", "Без метаданных"), Glyphs.Clear, "GPS, EXIF", T("no metadata", "без метаданных"), img => img.Strip());
         ops.Add(new BatchOperation("image.merge.pdf", WheelKind.Tools, T("Merge to PDF", "Объединить в PDF"), Glyphs.Merge,
             BatchOperation.AllOf(Formats.ImageInputs, min: 2),
@@ -120,13 +126,101 @@ public static class Catalog
                 : [.. H264(ctx.Settings.VideoCrf, "medium", null, null), "-an"],
             subtitle: T("muted", "без звука"));
         ops.Add(Trim("video.trim", Formats.Video));
+        string[] codecs = ["H.264", "H.265", "AV1", "VP9", "ProRes"];
+        ops.Add(new PerFileOperation("video.encode", WheelKind.Tools, T("Codec & FPS", "Кодек и FPS"), Glyphs.Video, Formats.Video, async (item, ctx, p) =>
+        {
+            var codec = ctx.Param("codec", "H.264");
+            // "Same" (no digits) keeps the rate; anything else must be a rate.
+            var fpsText = ctx.Param("fps");
+            double? fps = !fpsText.Any(char.IsDigit) ? null
+                : FfmpegBackend.ParseRate(fpsText) is { } r and <= 1000 ? r
+                : throw new ConversionException(T($"Invalid frame rate: {fpsText}", $"Некорректная частота кадров: {fpsText}"));
+            var (args, container) = EncodeArgs(codec, fps, ctx.Settings.VideoCrf);
+            var suffix = fps is null ? codec : $"{codec} {fps.Value.ToString("0.###", CultureInfo.InvariantCulture)} fps";
+            return [await FfmpegBackend.TransformAsync(item, suffix, ctx, p, args, container)];
+        }, subtitle: "H.265, AV1, 60 fps…")
+        {
+            Requires = [ExternalTool.Ffmpeg],
+            Parameters =
+            [
+                new ParameterSpec("codec", T("Codec", "Кодек"), "H.264", T("H.264 plays everywhere; H.265 and AV1 are smaller but slower to encode; ProRes is for editing (large files)",
+                    "H.264 открывается везде; H.265 и AV1 меньше, но кодируются дольше; ProRes — для монтажа (большие файлы)"), codecs),
+                new ParameterSpec("fps", T("Frame rate", "Частота кадров"), T("Same", "Как есть"),
+                    T("Lowering drops frames, raising repeats them. Own value: e.g. 12, 29.97 or 30000/1001", "Понижение выкидывает кадры, повышение повторяет их. Своё значение: например, 12, 29.97 или 30000/1001"),
+                    [T("Same", "Как есть"), "24", "25", "30", "50", "60"], OwnValue: true),
+            ],
+        });
+        ops.Add(new PerFileOperation("video.relight", WheelKind.Tools, T("Light & color", "Свет и цвет"), Glyphs.Brightness, Formats.Video,
+            async (item, ctx, p) => [await FfmpegBackend.TransformAsync(item, T("edited", "обработано"), ctx, p,
+                H264(ctx.Settings.VideoCrf, "medium", Relight.Filter(ctx.Parameters), "160k"), "mp4")],
+            subtitle: T("exposure, warmth", "экспозиция, теплота"))
+        { Requires = [ExternalTool.Ffmpeg], Parameters = Relight.Parameters() });
         Ffmpeg(ops, "video.rotate", T("Rotate", "Повернуть"), Glyphs.Rotate, Formats.Video, T("rotated", "повёрнуто"),
             (item, ctx) => H264(ctx.Settings.VideoCrf, "medium", "transpose=1", "160k"), outputFormat: _ => "mp4", subtitle: T("right", "вправо"));
-        Ffmpeg(ops, "video.speed2", T("Speed up", "Ускорить"), Glyphs.Play, Formats.Video, "2×",
-            (item, ctx) => [.. H264(ctx.Settings.VideoCrf, "medium", "setpts=0.5*PTS", "160k"), "-af", "atempo=2.0"],
-            outputFormat: _ => "mp4", subtitle: "2×");
-        Ffmpeg(ops, "video.thumbnail", T("Thumbnail", "Миниатюра"), Glyphs.Camera, Formats.Video, T("thumbnail", "миниатюра"),
-            (item, ctx) => ["-vf", "thumbnail=150", "-frames:v", "1", "-update", "1"], outputFormat: _ => "png", subtitle: T("PNG frame", "кадр PNG"));
+        // Keeps the old id, so wheels customised with the former fixed 2× slice still show it.
+        ops.Add(new PerFileOperation("video.speed2", WheelKind.Tools, T("Speed", "Скорость"), Glyphs.Play, Formats.Video, async (item, ctx, p) =>
+        {
+            var text = ctx.Param("speed", "2").TrimEnd('×', 'x', 'х', ' ');
+            var speed = FfmpegBackend.ParseRate(text) is { } s and >= 0.1 and <= 16 ? s
+                : throw new ConversionException(T($"Speed must be from 0.1 to 16: {text}", $"Скорость должна быть от 0,1 до 16: {text}"));
+            return [await FfmpegBackend.TransformAsync(item, $"{speed.ToString("0.###", CultureInfo.InvariantCulture)}×", ctx, p,
+                [.. H264(ctx.Settings.VideoCrf, "medium", $"setpts=PTS/{speed.ToString("R", CultureInfo.InvariantCulture)}", "160k"), "-af", Atempo(speed)], "mp4")];
+        }, subtitle: "0.5× … 4×")
+        {
+            Requires = [ExternalTool.Ffmpeg],
+            Parameters =
+            [
+                new ParameterSpec("speed", T("Speed", "Скорость"), "2×", T("Sound keeps its pitch. Own value: from 0.1 to 16, e.g. 1.25", "Звук сохраняет высоту тона. Своё значение: от 0,1 до 16, например 1,25"),
+                    ["0.25×", "0.5×", "0.75×", "1.5×", "2×", "4×"], OwnValue: true),
+            ],
+        });
+        ops.Add(new PerFileOperation("video.thumbnail", WheelKind.Tools, T("Frames", "Кадры"), Glyphs.Camera, Formats.Video, async (item, ctx, p) =>
+        {
+            var times = ctx.Param("times").Split([';', ' ', '\t', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(FfmpegBackend.ParseTime).ToList();
+            if (times.Count == 0)
+                return [await FfmpegBackend.TransformAsync(item, T("thumbnail", "миниатюра"), ctx, p, ["-vf", "thumbnail=150", "-frames:v", "1", "-update", "1"], "png")];
+            var outputs = new List<string>();
+            for (var i = 0; i < times.Count; i++)
+            {
+                // -ss before -i decodes up to the exact frame (the player marks frame starts).
+                var stamp = FfmpegBackend.FormatTime(times[i]).Replace(':', '-');
+                outputs.Add(await FfmpegBackend.TransformAsync(item, $"{T("frame", "кадр")} {stamp}", ctx, new Progress<double>(),
+                    ["-frames:v", "1", "-update", "1"], "png", inputArgs: ["-ss", times[i].ToString("0.###", CultureInfo.InvariantCulture)], duration: 1));
+                p.Report((i + 1.0) / times.Count);
+            }
+            return outputs;
+        }, subtitle: T("to PNG", "в PNG"))
+        {
+            Requires = [ExternalTool.Ffmpeg],
+            Parameters = [new ParameterSpec("times", T("Frames", "Кадры"), "", T("times separated by “;”, e.g. 0:05; 1:30.5 — empty = pick one automatically", "время через «;», например 0:05; 1:30.5 — пусто = выбрать автоматически"))],
+        });
+    }
+
+    /// <summary>atempo takes 0.5…100 per filter, so slower speeds chain several 0.5 steps.</summary>
+    public static string Atempo(double speed)
+    {
+        var chain = new List<string>();
+        for (; speed < 0.5; speed /= 0.5)
+            chain.Add("atempo=0.5");
+        chain.Add($"atempo={speed.ToString("R", CultureInfo.InvariantCulture)}");
+        return string.Join(",", chain);
+    }
+
+    /// <summary>Encoder arguments and container for a codec; <paramref name="crf"/> is the H.264 quality, the others are matched to it.</summary>
+    internal static (string[] Args, string Container) EncodeArgs(string codec, double? fps, int crf)
+    {
+        var vf = (fps is { } f ? $"fps={f.ToString("R", CultureInfo.InvariantCulture)}," : "") + "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+        string Crf(int offset) => (crf + offset).ToString(CultureInfo.InvariantCulture);
+        return codec switch
+        {
+            // hvc1 tag: otherwise Apple players refuse H.265 in MP4.
+            "H.265" => (["-c:v", "libx265", "-preset", "medium", "-crf", Crf(5), "-tag:v", "hvc1", "-pix_fmt", "yuv420p", "-vf", vf, "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"], "mp4"),
+            // The FFmpeg build Sweetch downloads has libaom, not SVT-AV1; cpu-used 6 keeps it bearable.
+            "AV1" => (["-c:v", "libaom-av1", "-crf", Crf(9), "-b:v", "0", "-cpu-used", "6", "-row-mt", "1", "-pix_fmt", "yuv420p", "-vf", vf, "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"], "mp4"),
+            "VP9" => (["-c:v", "libvpx-vp9", "-crf", Crf(9), "-b:v", "0", "-row-mt", "1", "-deadline", "good", "-cpu-used", "4", "-pix_fmt", "yuv420p", "-vf", vf, "-c:a", "libopus", "-b:a", "128k"], "webm"),
+            "ProRes" => (["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vf", vf, "-c:a", "pcm_s16le"], "mov"),
+            _ => ([.. H264(crf, "medium", fps is { } r ? $"fps={r.ToString("R", CultureInfo.InvariantCulture)}" : null, "160k")], "mp4"),
+        };
     }
 
     private static string[] H264(int crf, string preset, string? filter, string? audioBitrate)

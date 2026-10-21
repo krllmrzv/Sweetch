@@ -44,10 +44,10 @@ internal sealed class JobRunner(AppSettings settings, ToolLocator tools)
         parameters ??= new Dictionary<string, string>();
         if (op.Parameters.Count > 0 && parameters.Count == 0)
         {
-            var dialog = new ParameterDialog(op, items);
+            var dialog = ParameterDialog.For(op, items, tools);
             if (dialog.ShowDialog() != true)
                 return;
-            parameters = dialog.Values;
+            parameters = ((IParameterWindow)dialog).Values;
         }
         if (!automatic)
             Remember(op, parameters);
@@ -79,6 +79,11 @@ internal sealed class JobRunner(AppSettings settings, ToolLocator tools)
         try
         {
             var result = await Task.Run(() => op.ExecuteAsync(items, context));
+            if (settings.PlainNames)
+            {
+                // Inside an extracted archive the names are the user's own; leave them.
+                result = result with { Outputs = result.Outputs.Select(o => OutputPaths.MakePlain(o, recurse: op.Id != "archive.extract")).ToList() };
+            }
             Produced?.Invoke(result.Outputs);
             card.Complete(result.Outputs, result.Message, result.Note);
             if (!automatic && settings.RevealResult && result.Outputs.Count > 0)

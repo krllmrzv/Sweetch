@@ -31,6 +31,10 @@ public static class Glyphs
     public const string Clear = "\uE894";
     public const string Equalizer = "\uE9E9";
     public const string Play = "\uE768";
+    public const string Pause = "\uE769";
+    public const string Previous = "\uE892";
+    public const string Next = "\uE893";
+    public const string Brightness = "\uE706";
     public const string Library = "\uE8F1";
     public const string Text = "\uE8D2";
     public const string Table = "\uE80A";

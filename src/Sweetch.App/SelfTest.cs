@@ -43,7 +43,7 @@ internal static class SelfTest
 
             log.AddRange(SmokeTest.Run(Path.Combine(outDir, "smoke")));
             // Saved after every step, so a hard crash (which skips the catch below) still shows where it stopped.
-            foreach (var step in new Action[] { () => TestSettingsRoundTrip(log), () => TestExplorerCom(outDir, log), () => TestDrops(log), () => TestWatchFolder(outDir, log), () => TestOcr(outDir, log), () => log.Add("ok updates disabled: no network request") })
+            foreach (var step in new Action[] { () => TestSettingsRoundTrip(log), () => TestExplorerCom(outDir, log), () => TestDrops(log), () => TestWatchFolder(outDir, log), () => TestOcr(outDir, log), () => TestPlayer(outDir, log), () => TestRelight(outDir, log), () => log.Add("ok updates disabled: no network request") })
             {
                 File.WriteAllLines(Path.Combine(outDir, "self-test.txt"), log);
                 step();
@@ -161,6 +161,12 @@ internal static class SelfTest
         var trim = core.Single(o => o.Id == "video.trim");
         var dialog = new ParameterDialog(trim, [new FileItem(N(@"C:\Videa\klip.mov", @"C:\Videos\clip.mov"))]);
         SaveWindow(dialog, Path.Combine(outDir, "trim-dialog.png"), 360);
+        var encode = new ParameterDialog(core.Single(o => o.Id == "video.encode"), [new FileItem(N(@"C:\Videa\klip.mov", @"C:\Videos\clip.mov"))]);
+        Check(encode.Values["codec"] == "H.264", "codec choice default");
+        SaveWindow(encode, Path.Combine(outDir, "encode-dialog.png"), 520);
+        var speed = new ParameterDialog(core.Single(o => o.Id == "video.speed2"), [new FileItem(N(@"C:\Videa\klip.mov", @"C:\Videos\clip.mov"))]);
+        Check(speed.Values["speed"] == "2×", "speed choice default");
+        SaveWindow(speed, Path.Combine(outDir, "speed-dialog.png"), 620);
         log.Add($"ok {Path.GetFileName(outDir)}/parameter dialog");
     }
 
@@ -316,6 +322,145 @@ internal static class SelfTest
             System.Windows.Threading.Dispatcher.PushFrame(frame);
             Thread.Sleep(50);
         }
+    }
+
+    /// <summary>The trim player loads the bundled LibVLC, reads length and frame rate, and steps frames.</summary>
+    private static void TestPlayer(string outDir, List<string> log)
+    {
+        var dir = Path.Combine(outDir, "player");
+        Directory.CreateDirectory(dir);
+        var trim = WheelController.BuildOperations().Single(o => o.Id == "video.trim");
+
+        var wav = Path.Combine(dir, "тон #1.wav");
+        WriteTone(wav, seconds: 2);
+        var audio = new PlayerWindow(trim, [new FileItem(wav)], new ToolLocator());
+        audio.Show();
+        Pump(() => audio.Length > 0, TimeSpan.FromSeconds(15));
+        Check(audio.Length is > 1900 and < 2100, $"player reads audio length ({audio.Length} ms)");
+        audio.Close();
+
+        var tools = new ToolLocator();
+        if (!tools.Has(ExternalTool.Ffmpeg))
+        {
+            log.Add("ok player (audio; no FFmpeg for a video sample)");
+            return;
+        }
+        var mp4 = Path.Combine(dir, "clip.mp4");
+        ProcessRunner.RunAsync(tools.Require(ExternalTool.Ffmpeg), ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=4",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-shortest", "-pix_fmt", "yuv420p", mp4], default).GetAwaiter().GetResult();
+        var video = new PlayerWindow(trim, [new FileItem(mp4)], tools);
+        video.Show();
+        Pump(() => video.Length > 0, TimeSpan.FromSeconds(15));
+        Check(video.Length is > 3900 and < 4100 && Math.Abs(video.FrameMs - 40) < 0.01, $"player reads video length and frame rate ({video.Length} ms, {video.FrameMs} ms/frame)");
+        Pump(() => false, TimeSpan.FromSeconds(1));
+        CaptureScreen(video, Path.Combine(dir, "opened.png"));
+        video.TogglePlay();
+        Pump(() => false, TimeSpan.FromSeconds(1.5));
+        CaptureScreen(video, Path.Combine(dir, "playing.png"));
+        video.Step(37 - video.Position / 40);
+        Pump(() => false, TimeSpan.FromSeconds(2));
+        Check(video.Position == 37 * 40, $"frame step lands on frame 37 ({video.Position} ms)");
+        CaptureScreen(video, Path.Combine(dir, "frame-37.png")); // testsrc2 prints the frame number
+        video.Step(-1);
+        Pump(() => false, TimeSpan.FromSeconds(1));
+        Check(video.Position == 36 * 40, $"frame step back ({video.Position} ms)");
+        video.MarkHere(end: false);
+        video.Step(40);
+        Pump(() => false, TimeSpan.FromSeconds(1));
+        video.MarkHere(end: true);
+        Check(video.Values["start"] == "00:00:01.440" && video.Values["end"] == "00:00:03.079", $"marks keep frames 36–76 ({video.Values["start"]} – {video.Values["end"]})");
+        Pump(() => false, TimeSpan.FromSeconds(0.5));
+        CaptureScreen(video, Path.Combine(dir, "marked.png"));
+        video.Close();
+
+        var watchAction = Sweetchs.Build(new AppSettings(), () => { }).Single(o => o.Id == "action.watch");
+        Check(watchAction.AppliesTo([new FileItem(mp4)]) && !watchAction.AppliesTo([new FileItem(Path.Combine(dir, "doc.pdf"))]), "watch action is offered for video only");
+        var watch = new PlayerWindow(null, [new FileItem(mp4)], tools);
+        watch.Show();
+        Pump(() => watch.Position > 500, TimeSpan.FromSeconds(15));
+        Check(watch.Position > 500, $"watch starts playing by itself ({watch.Position} ms)");
+        CaptureScreen(watch, Path.Combine(dir, "watch.png"));
+        watch.Close();
+
+        var picker = new PlayerWindow(WheelController.BuildOperations().Single(o => o.Id == "video.thumbnail"), [new FileItem(mp4)], tools);
+        picker.Show();
+        Pump(() => picker.Length > 0, TimeSpan.FromSeconds(15));
+        Pump(() => false, TimeSpan.FromSeconds(1));
+        picker.Step(10);
+        picker.AddFrame();
+        picker.Step(5);
+        picker.AddFrame();
+        Check(picker.Values["times"] == "00:00:00.400; 00:00:00.600", $"picked frames ({picker.Values["times"]})");
+        Pump(() => false, TimeSpan.FromSeconds(1));
+        CaptureScreen(picker, Path.Combine(dir, "frames.png"));
+        picker.Close();
+        log.Add("ok player");
+    }
+
+    /// <summary>The light & color window renders its live preview for a photo and a video.</summary>
+    private static void TestRelight(string outDir, List<string> log)
+    {
+        var tools = new ToolLocator();
+        if (!tools.Has(ExternalTool.Ffmpeg))
+        {
+            log.Add("skipped relight (no FFmpeg)");
+            return;
+        }
+        var dir = Path.Combine(outDir, "relight");
+        Directory.CreateDirectory(dir);
+        var photo = Path.Combine(dir, "фото.jpg");
+        var clip = Path.Combine(dir, "clip.mp4");
+        ProcessRunner.RunAsync(tools.Require(ExternalTool.Ffmpeg), ["-hide_banner", "-y", "-f", "lavfi", "-i", "gradients=size=1280x720:seed=7", "-frames:v", "1", photo], default).GetAwaiter().GetResult();
+        ProcessRunner.RunAsync(tools.Require(ExternalTool.Ffmpeg), ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:duration=3", "-pix_fmt", "yuv420p", clip], default).GetAwaiter().GetResult();
+        var ops = WheelController.BuildOperations();
+        foreach (var (id, file) in new[] { ("image.relight", photo), ("video.relight", clip) })
+        {
+            var window = new RelightWindow(ops.Single(o => o.Id == id), [new FileItem(file)], tools);
+            window.Show();
+            Pump(() => window.Rendered, TimeSpan.FromSeconds(20));
+            Check(window.Rendered, $"{id} preview");
+            window.Set("exposure", 40);
+            window.Set("warmth", 70);
+            Pump(() => false, TimeSpan.FromSeconds(0.5));
+            Pump(() => window.Rendered, TimeSpan.FromSeconds(20));
+            Check(window.Values["warmth"] == "70", $"{id} values");
+            SaveWindow(window, Path.Combine(dir, id + ".png"), 1000);
+            window.Close();
+        }
+        log.Add("ok relight");
+    }
+
+    private static void WriteTone(string path, double seconds)
+    {
+        const int rate = 44100;
+        var samples = (int)(rate * seconds);
+        using var w = new BinaryWriter(File.Create(path));
+        w.Write("RIFF"u8);
+        w.Write(36 + samples * 2);
+        w.Write("WAVEfmt "u8);
+        w.Write(16);
+        w.Write((short)1);
+        w.Write((short)1);
+        w.Write(rate);
+        w.Write(rate * 2);
+        w.Write((short)2);
+        w.Write((short)16);
+        w.Write("data"u8);
+        w.Write(samples * 2);
+        for (var i = 0; i < samples; i++)
+            w.Write((short)(Math.Sin(2 * Math.PI * 440 * i / rate) * 8000));
+    }
+
+    /// <summary>A real screen grab: the video lives in a native child window that RenderTargetBitmap can't see.</summary>
+    private static void CaptureScreen(Window window, string file)
+    {
+        var toDevice = PresentationSource.FromVisual(window)!.CompositionTarget.TransformToDevice;
+        var topLeft = toDevice.Transform(new Point(window.Left, window.Top));
+        var size = toDevice.Transform(new Point(window.ActualWidth, window.ActualHeight));
+        using var bitmap = new System.Drawing.Bitmap((int)size.X, (int)size.Y);
+        using (var g = System.Drawing.Graphics.FromImage(bitmap))
+            g.CopyFromScreen((int)topLeft.X, (int)topLeft.Y, 0, 0, bitmap.Size);
+        bitmap.Save(file, System.Drawing.Imaging.ImageFormat.Png);
     }
 
     /// <summary>Renders a line of text and reads it back with Windows OCR, when the runner has it.</summary>

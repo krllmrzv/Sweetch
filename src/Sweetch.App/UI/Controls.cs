@@ -270,6 +270,18 @@ internal static class Controls
         return button;
     }
 
+    /// <summary>Loads a picture fully into memory, so the file can be deleted right away.</summary>
+    public static System.Windows.Media.Imaging.BitmapImage Bitmap(string file)
+    {
+        var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+        bitmap.BeginInit();
+        bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+        bitmap.UriSource = new Uri(file);
+        bitmap.EndInit();
+        bitmap.Freeze();
+        return bitmap;
+    }
+
     /// <summary>A single-line text box in the card style.</summary>
     public static TextBox TextField(string text, int maxLength = 200) => new()
     {

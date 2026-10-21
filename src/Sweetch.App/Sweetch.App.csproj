@@ -55,4 +55,26 @@
     <ProjectReference Include="..\Sweetch.Core\Sweetch.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="LibVLCSharp.WPF" Version="3.10.2" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
+  </ItemGroup>
+
+  <!--
+    LibVLC for the trim player: x64 only, and only what local playback needs
+    (no network access, streaming, encoders, subtitles or Lua) — about a third of the full 109 MB.
+  -->
+  <PropertyGroup>
+    <VlcWindowsX86Enabled>false</VlcWindowsX86Enabled>
+    <VlcWindowsArm64Enabled>false</VlcWindowsArm64Enabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <VlcWindowsX64IncludeFiles Include="libvlc.dll;libvlccore.dll;plugins\access\libfilesystem_plugin.dll;plugins\access\libidummy_plugin.dll" />
+    <VlcWindowsX64IncludeFiles Include="plugins\codec\%2A%2A;plugins\demux\%2A%2A;plugins\packetizer\%2A%2A;plugins\stream_filter\%2A%2A;plugins\logger\%2A%2A" />
+    <VlcWindowsX64IncludeFiles Include="plugins\audio_output\%2A%2A;plugins\audio_filter\%2A%2A;plugins\audio_mixer\%2A%2A" />
+    <VlcWindowsX64IncludeFiles Include="plugins\video_output\%2A%2A;plugins\video_chroma\%2A%2A;plugins\video_filter\%2A%2A;plugins\d3d11\%2A%2A;plugins\d3d9\%2A%2A" />
+    <VlcWindowsX64ExcludeFiles Include="plugins\codec\libx26410b_plugin.dll;plugins\codec\libx264_plugin.dll;plugins\codec\libx265_plugin.dll;plugins\codec\libaom_plugin.dll;plugins\codec\libqsv_plugin.dll;plugins\codec\libtwolame_plugin.dll" />
+    <VlcWindowsX64ExcludeFiles Include="plugins\codec\liblibass_plugin.dll;plugins\codec\libzvbi_plugin.dll;plugins\codec\libfluidsynth_plugin.dll;plugins\codec\libcrystalhd_plugin.dll;plugins\codec\libkate_plugin.dll" />
+  </ItemGroup>
+
 </Project>

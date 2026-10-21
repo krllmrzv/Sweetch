@@ -13,6 +13,43 @@ public static partial class FfmpegBackend
     [GeneratedRegex(@"\btime=\s*(\d+):(\d+):(\d+(?:\.\d+)?)")]
     private static partial Regex TimeRegex();
 
+    [GeneratedRegex(@"Video:.*?(\d+(?:\.\d+)?) fps")]
+    private static partial Regex FpsRegex();
+
+    /// <summary>Duration (seconds) and frame rate of the first video stream as ffmpeg reports them; null when unknown.</summary>
+    public static async Task<(double? Duration, double? Fps)> ProbeAsync(string ffmpeg, string path, CancellationToken ct = default)
+    {
+        double? duration = null, fps = null;
+        try
+        {
+            await ProcessRunner.RunAsync(ffmpeg, ["-hide_banner", "-nostdin", "-i", path], ct, line =>
+            {
+                if (duration is null && DurationRegex().Match(line) is { Success: true } d)
+                    duration = Seconds(d);
+                if (fps is null && FpsRegex().Match(line) is { Success: true } m)
+                    fps = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            }).ConfigureAwait(false);
+        }
+        catch (ConversionException)
+        {
+            // Without an output file ffmpeg always exits with an error; the stream info is printed before that.
+        }
+        if (fps is not > 0)
+            return (duration, null);
+        // Printed rates are rounded (23.98); NTSC ones are really n·1000/1001, and the error adds up over frames.
+        var ntsc = Math.Round(fps.Value * 1.001) / 1.001;
+        return (duration, Math.Abs(ntsc - fps.Value) < 0.006 && Math.Abs(fps.Value - Math.Round(fps.Value)) > 0.001 ? ntsc : fps);
+    }
+
+    /// <summary>Trim start (seconds) that keeps frame <paramref name="frame"/>: ffmpeg keeps frames at or after -ss.</summary>
+    public static double FrameStart(long frame, double frameMs) => Math.Floor(frame * frameMs) / 1000;
+
+    /// <summary>
+    /// Trim end (seconds) that keeps frame <paramref name="last"/> and drops the next. ffmpeg measures -t from
+    /// the first kept frame, which can sit up to 1 ms after the rounded start, so stop 1 ms short of the next frame.
+    /// </summary>
+    public static double FrameEnd(long last, double frameMs) => (Math.Floor((last + 1) * frameMs) - 1) / 1000;
+
     /// <summary>Encoder arguments for a target container.</summary>
     public static IReadOnlyList<string> CodecArgs(string format, Settings s, bool hasVideo = true)
     {
@@ -123,6 +160,17 @@ public static partial class FfmpegBackend
         _ => format,
     };
 
+    /// <summary>"29.97", "29,97" or "30000/1001" → the number; null when it isn't a positive one.</summary>
+    public static double? ParseRate(string text)
+    {
+        var parts = text.Trim().Replace(',', '.').Split('/');
+        var numbers = parts.Select(p => double.TryParse(p, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : double.NaN).ToList();
+        if (numbers.Count > 2 || numbers.Any(double.IsNaN))
+            return null;
+        var value = numbers[0] / (numbers.Count == 2 ? numbers[1] : 1);
+        return value > 0 && double.IsFinite(value) ? value : null;
+    }
+
     /// <summary>Parses "90", "1:30", "01:02:03.5" into seconds.</summary>
     public static double ParseTime(string text)
     {
@@ -141,5 +189,5 @@ public static partial class FfmpegBackend
     }
 
     public static string FormatTime(double seconds) =>
-        TimeSpan.FromSeconds(seconds).ToString(@"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture);
+        TimeSpan.FromMilliseconds(Math.Round(seconds * 1000)).ToString(@"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture);
 }

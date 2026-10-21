@@ -79,6 +79,42 @@ public static class ImageBackend
             image.Write(output, ToMagickFormat(format));
         }, ct);
 
+    /// <summary>
+    /// Runs an ffmpeg filter over a photo: Magick decodes (RAW, HEIC, orientation) and encodes (quality,
+    /// metadata, alpha); ffmpeg only filters, so photos match the video preview.
+    /// </summary>
+    /// <param name="maxSide">Downscale first (previews).</param>
+    public static async Task FilterAsync(string input, string output, string format, string filter, int quality, OperationContext ctx, uint? maxSide = null)
+    {
+        var dir = OutputPaths.TempDirectory();
+        try
+        {
+            using var source = await Task.Run(() => Load(input), ctx.CancellationToken).ConfigureAwait(false);
+            if (maxSide is { } side)
+                ResizeMax(source, side);
+            var a = Path.Combine(dir, "in.png");
+            var b = Path.Combine(dir, "out.png");
+            await Task.Run(() => source.Write(a, MagickFormat.Png), ctx.CancellationToken).ConfigureAwait(false);
+            await FfmpegBackend.RunAsync(ctx, [a], ["-vf", filter + ",format=rgb24", "-frames:v", "1", "-update", "1"], b, new Progress<double>()).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                using var result = new MagickImage(b);
+                if (source.HasAlpha)
+                    result.Composite(source, CompositeOperator.CopyAlpha);
+                if (source.GetExifProfile() is { } exif)
+                    result.SetProfile(exif);
+                if (source.GetColorProfile() is { } icc)
+                    result.SetProfile(icc);
+                PrepareFor(result, format, quality);
+                result.Write(output, ToMagickFormat(format));
+            }, ctx.CancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            OutputPaths.TryDelete(dir);
+        }
+    }
+
     /// <summary>Formats we can read but not write (SVG) are saved as PNG.</summary>
     public static string OutputFormatFor(string inputFormat) => inputFormat switch
     {

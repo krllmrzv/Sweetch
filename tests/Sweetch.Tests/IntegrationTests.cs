@@ -222,6 +222,149 @@ public class IntegrationTests : IClassFixture<IntegrationTests.Samples>
     }
 
     [Fact]
+    public async Task Trim_marks_keep_exactly_the_marked_frames()
+    {
+        if (!_s.Tools.Has(ExternalTool.Ffmpeg))
+            return;
+        // 23.976 fps: frame starts are not whole milliseconds, where an off-by-one would show.
+        var dir = Path.Combine(_s.Dir, "out", "frames");
+        Directory.CreateDirectory(dir);
+        var source = Path.Combine(dir, "ntsc.mp4");
+        await ProcessRunner.RunAsync(_s.Tools.Ffmpeg!, ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=24000/1001:duration=3",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", source], default);
+        var (_, fps) = await FfmpegBackend.ProbeAsync(_s.Tools.Ffmpeg!, source);
+        Assert.Equal(24000.0 / 1001, fps!.Value, 9);
+        var frameMs = 1000 / fps!.Value;
+
+        // Start mark on frame 36, end mark on frame 40, both kept: 5 frames.
+        var op = Catalog.Build().Single(o => o.Id == "video.trim");
+        var parameters = new Dictionary<string, string>
+        {
+            ["start"] = FfmpegBackend.FormatTime(FfmpegBackend.FrameStart(36, frameMs)),
+            ["end"] = FfmpegBackend.FormatTime(FfmpegBackend.FrameEnd(40, frameMs)),
+        };
+        var result = await op.ExecuteAsync([new FileItem(source)], _s.Context(dir, parameters));
+
+        var frames = 0;
+        try
+        {
+            await ProcessRunner.RunAsync(_s.Tools.Ffmpeg!, ["-hide_banner", "-i", result.Outputs[0], "-map", "0:v:0", "-f", "null", "-"], default, line =>
+            {
+                if (System.Text.RegularExpressions.Regex.Match(line, @"frame=\s*(\d+)") is { Success: true } m)
+                    frames = int.Parse(m.Groups[1].Value);
+            });
+        }
+        finally
+        {
+            output.WriteLine($"{parameters["start"]} – {parameters["end"]}: {frames} frames");
+        }
+        Assert.Equal(5, frames);
+    }
+
+    [Theory]
+    [InlineData("H.264", "60", "h264", 60)]
+    [InlineData("H.265", "", "hevc", 25)]
+    [InlineData("AV1", "24", "av1", 24)]
+    [InlineData("VP9", "", "vp9", 25)]
+    [InlineData("ProRes", "30", "prores", 30)]
+    [InlineData("H.264", "12", "h264", 12)]
+    [InlineData("VP9", "30000/1001", "vp9", 30000.0 / 1001)]
+    public async Task Codec_and_fps(string codec, string fps, string expectedCodec, double expectedFps)
+    {
+        if (!_s.Tools.Has(ExternalTool.Ffmpeg))
+            return;
+        var op = Catalog.Build().Single(o => o.Id == "video.encode");
+        var result = await op.ExecuteAsync([new FileItem(_s.Files["mp4"])],
+            _s.Context(Path.Combine(_s.Dir, "out", "encode", codec), new Dictionary<string, string> { ["codec"] = codec, ["fps"] = fps }));
+        var info = "";
+        try
+        {
+            await ProcessRunner.RunAsync(_s.Tools.Ffmpeg!, ["-hide_banner", "-i", result.Outputs[0]], default, line => info += line + Environment.NewLine);
+        }
+        catch (ConversionException)
+        {
+            // No output file: ffmpeg only prints the stream info.
+        }
+        Assert.Contains($"Video: {expectedCodec}", info);
+        Assert.Equal(expectedFps, (await FfmpegBackend.ProbeAsync(_s.Tools.Ffmpeg!, result.Outputs[0])).Fps!.Value, 6);
+    }
+
+    [Fact]
+    public async Task Codec_rejects_a_junk_frame_rate()
+    {
+        if (!_s.Tools.Has(ExternalTool.Ffmpeg))
+            return;
+        var op = Catalog.Build().Single(o => o.Id == "video.encode");
+        await Assert.ThrowsAsync<ConversionException>(() => op.ExecuteAsync([new FileItem(_s.Files["mp4"])],
+            _s.Context(Path.Combine(_s.Dir, "out", "encode-junk"), new Dictionary<string, string> { ["codec"] = "H.264", ["fps"] = "3o fps" })));
+    }
+
+    [Theory]
+    [InlineData("0.25×", 8)]
+    [InlineData("1.5×", 1.333)]
+    [InlineData("1,25", 1.6)]
+    public async Task Speed_changes_duration_and_keeps_sound(string speed, double seconds)
+    {
+        if (!_s.Tools.Has(ExternalTool.Ffmpeg))
+            return;
+        var op = Catalog.Build().Single(o => o.Id == "video.speed2");
+        var result = await op.ExecuteAsync([new FileItem(_s.Files["mp4"])],
+            _s.Context(Path.Combine(_s.Dir, "out", "speed", seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)), new Dictionary<string, string> { ["speed"] = speed }));
+        var (duration, _) = await FfmpegBackend.ProbeAsync(_s.Tools.Ffmpeg!, result.Outputs[0]);
+        Assert.InRange(duration!.Value, seconds - 0.15, seconds + 0.15);
+    }
+
+    [Fact]
+    public async Task Frames_exports_exactly_the_picked_frames()
+    {
+        if (!_s.Tools.Has(ExternalTool.Ffmpeg))
+            return;
+        var dir = Path.Combine(_s.Dir, "out", "pick");
+        Directory.CreateDirectory(dir);
+        var source = Path.Combine(dir, "ntsc.mp4");
+        await ProcessRunner.RunAsync(_s.Tools.Ffmpeg!, ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=24000/1001:duration=3",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", source], default);
+        var frameMs = 1000 / (await FfmpegBackend.ProbeAsync(_s.Tools.Ffmpeg!, source)).Fps!.Value;
+        var times = string.Join("; ", new[] { 12, 37 }.Select(n => FfmpegBackend.FormatTime(FfmpegBackend.FrameStart(n, frameMs))));
+
+        var op = Catalog.Build().Single(o => o.Id == "video.thumbnail");
+        var result = await op.ExecuteAsync([new FileItem(source)], _s.Context(dir, new Dictionary<string, string> { ["times"] = times }));
+        Assert.Equal(2, result.Outputs.Count);
+        foreach (var (output, n) in result.Outputs.Zip([12, 37]))
+        {
+            var expected = Path.Combine(dir, $"expected-{n}.png");
+            await ProcessRunner.RunAsync(_s.Tools.Ffmpeg!, ["-hide_banner", "-y", "-i", source, "-vf", $"select='eq(n,{n})'", "-frames:v", "1", expected], default);
+            using var a = new ImageMagick.MagickImage(output);
+            using var b = new ImageMagick.MagickImage(expected);
+            Assert.True(a.Compare(b, ImageMagick.ErrorMetric.RootMeanSquared) < 0.001, $"{Path.GetFileName(output)} is frame {n}");
+        }
+    }
+
+    [Fact]
+    public async Task Relight_runs_every_knob_and_brightens()
+    {
+        if (!_s.Tools.Has(ExternalTool.Ffmpeg))
+            return;
+        var all = Catalog.Build();
+        var everything = Relight.Knobs().ToDictionary(k => k.Key, k => "40");
+        var dir = Path.Combine(_s.Dir, "out", "relight");
+        foreach (var (id, key) in new[] { ("image.relight", "png"), ("image.relight", "jpg"), ("video.relight", "mp4") })
+        {
+            var result = await all.Single(o => o.Id == id).ExecuteAsync([new FileItem(_s.Files[key])], _s.Context(dir, everything));
+            Assert.True(new FileInfo(result.Outputs[0]).Length > 0, $"{id} on {key}");
+        }
+
+        var brighter = await all.Single(o => o.Id == "image.relight").ExecuteAsync([new FileItem(_s.Files["jpg"])],
+            _s.Context(Path.Combine(dir, "exposure"), new Dictionary<string, string> { ["exposure"] = "50" }));
+        static double Mean(string path)
+        {
+            using var image = new ImageMagick.MagickImage(path);
+            return image.Statistics().Composite()!.Mean;
+        }
+        Assert.True(Mean(brighter.Outputs[0]) > Mean(_s.Files["jpg"]) * 1.05, "+50 exposure brightens the photo");
+    }
+
+    [Fact]
     public async Task Video_without_audio_gives_clear_error()
     {
         if (!_s.Files.TryGetValue("mute", out var path))

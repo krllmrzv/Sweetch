@@ -59,6 +59,65 @@ public static class OutputPaths
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }
+
+    /// <summary>
+    /// "моё видео (обрезано)" → "moe_video_obrezano": ASCII letters, digits, '.', '-' and '_' only, so nothing
+    /// needs quoting in a shell. Cyrillic is transliterated, other accents dropped (Žluťoučký → Zlutoucky).
+    /// </summary>
+    public static string PlainName(string name)
+    {
+        var latin = new System.Text.StringBuilder();
+        foreach (var c in name)
+        {
+            if (Cyrillic.TryGetValue(char.ToLowerInvariant(c), out var t))
+                latin.Append(char.IsUpper(c) && t.Length > 0 ? char.ToUpperInvariant(t[0]) + t[1..] : t);
+            else
+                latin.Append(c);
+        }
+        var chars = latin.ToString().Normalize(System.Text.NormalizationForm.FormD)
+            .Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark)
+            .Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_').ToArray();
+        var plain = System.Text.RegularExpressions.Regex.Replace(new string(chars), "_{2,}", "_").Trim('_');
+        return plain.Length == 0 ? "file" : plain;
+    }
+
+    private static readonly Dictionary<char, string> Cyrillic = new()
+    {
+        ['а'] = "a", ['б'] = "b", ['в'] = "v", ['г'] = "g", ['д'] = "d", ['е'] = "e", ['ё'] = "e", ['ж'] = "zh", ['з'] = "z",
+        ['и'] = "i", ['й'] = "y", ['к'] = "k", ['л'] = "l", ['м'] = "m", ['н'] = "n", ['о'] = "o", ['п'] = "p", ['р'] = "r",
+        ['с'] = "s", ['т'] = "t", ['у'] = "u", ['ф'] = "f", ['х'] = "kh", ['ц'] = "ts", ['ч'] = "ch", ['ш'] = "sh", ['щ'] = "shch",
+        ['ъ'] = "", ['ы'] = "y", ['ь'] = "", ['э'] = "e", ['ю'] = "yu", ['я'] = "ya",
+        ['і'] = "i", ['ї'] = "yi", ['є'] = "ye", ['ґ'] = "g", ['ў'] = "u",
+    };
+
+    /// <summary>
+    /// Renames a produced file or folder to a plain name (and, with <paramref name="recurse"/>, what's inside);
+    /// returns the new path. Taken names get "_2", "_3"….
+    /// </summary>
+    public static string MakePlain(string path, bool recurse)
+    {
+        path = path.TrimEnd('\\', '/');
+        var isDir = Directory.Exists(path);
+        if (isDir && recurse)
+        {
+            foreach (var child in Directory.GetFileSystemEntries(path))
+                MakePlain(child, recurse: true);
+        }
+        var name = Path.GetFileName(path);
+        var ext = isDir ? "" : Path.GetExtension(name);
+        var stem = PlainName(name[..^ext.Length]);
+        if (stem + ext == name)
+            return path;
+        var dir = Path.GetDirectoryName(path)!;
+        var target = Path.Combine(dir, stem + ext);
+        for (var i = 2; File.Exists(target) || Directory.Exists(target); i++)
+            target = Path.Combine(dir, $"{stem}_{i}{ext}");
+        if (isDir)
+            Directory.Move(path, target);
+        else
+            File.Move(path, target);
+        return target;
+    }
 }
 
 public sealed class ConversionException(string message, Exception? inner = null) : Exception(message, inner);
