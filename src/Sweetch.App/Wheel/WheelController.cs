@@ -131,7 +131,10 @@ internal sealed class WheelController
                 open.SwitchTo(wheel);
             return;
         }
-        if (_input.IsDragging)
+        // Holding a modifier while dragging the mouse is common in games (#5): never open the
+        // drag wheel over a full-screen app. The window itself also stays invisible until a
+        // real file drag reaches it (see WheelWindow.ShowAt).
+        if (_input.IsDragging && !Win32.IsFullScreenAppInForeground())
             Open(WheelMode.Drag, wheel, null, _input.Cursor);
     }
 
