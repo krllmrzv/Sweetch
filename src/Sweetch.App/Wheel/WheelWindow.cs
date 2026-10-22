@@ -62,6 +62,8 @@ internal sealed class WheelWindow : Window
     private bool _finished;
     private bool _repeat;
     private DispatcherTimer? _closeTimer;
+    /// <summary>Waiting, invisible, for a real file drag before showing (see ShowAt).</summary>
+    private bool _armed;
 
     public WheelWindow(
         WheelMode mode,
@@ -156,6 +158,21 @@ internal sealed class WheelWindow : Window
         _anchor = screenPoint;
         Show();
         PositionAtAnchor();
+        if (Mode == WheelMode.Drag && _items.Count == 0)
+        {
+            // Armed, not shown (#5): any mouse drag with a modifier gets here, but only a drag
+            // that carries files reaches DragEnter. At 1 % opacity the window is invisible yet
+            // still a drop target (fully transparent pixels would let the drag pass through).
+            _armed = true;
+            Opacity = 0.01;
+            return;
+        }
+        Reveal();
+    }
+
+    /// <summary>Fades and scales the wheel in.</summary>
+    private void Reveal()
+    {
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         var duration = TimeSpan.FromMilliseconds(140);
         BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, duration) { EasingFunction = ease });
@@ -233,6 +250,12 @@ internal sealed class WheelWindow : Window
     {
         if (Mode != WheelMode.Drag || _finished)
             return;
+        if (_armed)
+        {
+            // Nothing was dragged onto us: it wasn't a file drag. Vanish without a trace.
+            Finish();
+            return;
+        }
         _closeTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Normal, (_, _) => Finish(), Dispatcher);
         _closeTimer.Start();
     }
@@ -295,7 +318,15 @@ internal sealed class WheelWindow : Window
             _items = preview.Items;
             LoadOperations();
             Build();
-            AnimateSlicesIn();
+            if (_armed)
+            {
+                _armed = false;
+                Reveal();
+            }
+            else
+            {
+                AnimateSlicesIn();
+            }
         }
         _closeTimer?.Stop();
         var index = HitTest(e.GetPosition(_canvas), out _);

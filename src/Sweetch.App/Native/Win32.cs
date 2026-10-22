@@ -210,6 +210,43 @@ internal static class Win32
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style | flags));
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("shell32.dll")]
+    private static extern int SHQueryUserNotificationState(out int state);
+
+    // QUERY_USER_NOTIFICATION_STATE values that mean "something runs full screen".
+    private const int QUNS_BUSY = 2, QUNS_RUNNING_D3D_FULL_SCREEN = 3, QUNS_PRESENTATION_MODE = 4;
+
+    /// <summary>
+    /// True when the foreground window is a full-screen app (a game, a presentation, a video)
+    /// rather than File Explorer or the desktop.
+    /// </summary>
+    public static bool IsFullScreenAppInForeground()
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+            return false;
+        var cls = new System.Text.StringBuilder(64);
+        GetClassName(hwnd, cls, cls.Capacity);
+        // Desktop, taskbar and Explorer windows are where file drags come from.
+        if (cls.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "CabinetWClass" or "ExploreWClass")
+            return false;
+        if (SHQueryUserNotificationState(out var state) == 0
+            && state is QUNS_BUSY or QUNS_RUNNING_D3D_FULL_SCREEN or QUNS_PRESENTATION_MODE)
+            return true;
+        // Borderless "fullscreen window" games: the window covers its whole monitor.
+        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetWindowRect(hwnd, out var r) || !GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), ref info))
+            return false;
+        var m = info.rcMonitor;
+        return r.Left <= m.Left && r.Top <= m.Top && r.Right >= m.Right && r.Bottom >= m.Bottom;
+    }
+
     public static RECT WorkAreaAt(POINT pt)
     {
         var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
