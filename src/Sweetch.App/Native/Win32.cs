@@ -15,6 +15,7 @@ internal static class Win32
     public const int WM_MOUSEMOVE = 0x0200;
     public const int WM_LBUTTONDOWN = 0x0201;
     public const int WM_LBUTTONUP = 0x0202;
+    public const int WM_MOUSEWHEEL = 0x020A;
     public const int WM_RBUTTONDOWN = 0x0204;
     public const int WM_MBUTTONDOWN = 0x0207;
     public const int WM_HOTKEY = 0x0312;
@@ -70,26 +71,6 @@ internal static class Win32
         public IntPtr lParam;
         public uint time;
         public POINT pt;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct MSLLHOOKSTRUCT
-    {
-        public POINT pt;
-        public uint mouseData;
-        public uint flags;
-        public uint time;
-        public IntPtr dwExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct KBDLLHOOKSTRUCT
-    {
-        public uint vkCode;
-        public uint scanCode;
-        public uint flags;
-        public uint time;
-        public IntPtr dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -208,6 +189,49 @@ internal static class Win32
     {
         var style = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style | flags));
+    }
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct CURSORINFO
+    {
+        public int cbSize;
+        public int flags;
+        public IntPtr hCursor;
+        public POINT ptScreenPos;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetCursorInfo(ref CURSORINFO pci);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    // Cursors a drag of a window, a scrollbar or a text selection shows; a drag of files shows the drop cursors instead.
+    private static readonly IntPtr[] PlainCursors = [.. new[] { 32512, 32513, 32646, 32644, 32645, 32642, 32643, 32649 }
+        .Select(id => LoadCursor(IntPtr.Zero, id))];
+
+    /// <summary>
+    /// Is something being dragged with drag-and-drop (files, images) rather than a window moved or text selected?
+    /// The shell's drag image is up, or the cursor is not one of the plain system cursors.
+    /// </summary>
+    public static bool IsDragAndDrop()
+    {
+        var image = FindWindow("SysDragImage", null);
+        if (image != IntPtr.Zero && IsWindowVisible(image))
+            return true;
+        var info = new CURSORINFO { cbSize = Marshal.SizeOf<CURSORINFO>() };
+        return GetCursorInfo(ref info) && info.hCursor != IntPtr.Zero && !PlainCursors.Contains(info.hCursor);
     }
 
     public static RECT WorkAreaAt(POINT pt)

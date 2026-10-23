@@ -32,6 +32,14 @@ public sealed class PerFileOperation : Operation
     /// <summary>Accept any file regardless of its format.</summary>
     public bool AcceptsAnyFile { get; init; }
 
+    /// <summary>
+    /// How many files run at once. Images gain from several cores; FFmpeg already uses them all and PDFium
+    /// works one document at a time, so those stay at one.
+    /// </summary>
+    public int Parallelism { get; init; } = 1;
+
+    public static int ImageParallelism => Math.Clamp(Environment.ProcessorCount / 2, 1, 4);
+
     /// <summary>Per-file tool check for operations whose backend depends on the input format.</summary>
     public Func<ToolLocator, FileItem, bool>? AvailableFor { get; init; }
 
@@ -66,23 +74,27 @@ public sealed class PerFileOperation : Operation
         var work = items
             .Where(i => _targetFormat is null || i.IsDirectory || !string.Equals(i.Format, _targetFormat, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        var outputs = new List<string>();
-        var errors = new List<string>();
-        for (var i = 0; i < work.Count; i++)
+        var results = new IEnumerable<string>?[work.Count];
+        var failures = new string?[work.Count];
+        var done = 0;
+        var options = new ParallelOptions { MaxDegreeOfParallelism = Parallelism, CancellationToken = ctx.CancellationToken };
+        await Parallel.ForEachAsync(Enumerable.Range(0, work.Count), options, async (i, _) =>
         {
-            ctx.CancellationToken.ThrowIfCancellationRequested();
-            var progress = ctx.SubProgress(i, work.Count);
+            // Files running side by side can't share the bar, so they only count when finished.
+            var progress = Parallelism > 1 ? new Progress<double>() : ctx.SubProgress(i, work.Count);
             try
             {
-                outputs.AddRange(await _handler(work[i], ctx, progress).ConfigureAwait(false));
+                results[i] = await _handler(work[i], ctx, progress).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException && work.Count > 1)
             {
                 // Keep going with the rest of a batch; report failures at the end.
-                errors.Add($"{work[i].Name}: {ex.Message}");
+                failures[i] = $"{work[i].Name}: {ex.Message}";
             }
-            progress.Report(1);
-        }
+            ctx.Progress.Report((double)Interlocked.Increment(ref done) / work.Count);
+        }).ConfigureAwait(false);
+        var outputs = results.Where(r => r is not null).SelectMany(r => r!).ToList();
+        var errors = failures.OfType<string>().ToList();
         if (errors.Count > 0 && outputs.Count == 0)
             throw new ConversionException(string.Join(Environment.NewLine, errors));
         return new OperationResult(outputs, errors.Count > 0 ? string.Join(Environment.NewLine, errors) : null);

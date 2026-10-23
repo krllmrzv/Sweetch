@@ -151,4 +151,22 @@ public class MiscTests
             OutputPaths.TryDelete(dir);
         }
     }
+
+    [Fact]
+    public void Gpu_encoding_swaps_only_the_x264_options()
+    {
+        var cpu = FfmpegBackend.CodecArgs("mp4", new Settings { VideoCrf = 23 }).ToList();
+        var nvenc = FfmpegBackend.OnGpu(cpu, "h264_nvenc");
+        Assert.Equal(["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "27", "-b:v", "0", "-pix_fmt", "yuv420p"], nvenc.Take(12));
+        Assert.DoesNotContain("libx264", nvenc);
+        Assert.Equal(cpu.SkipWhile(a => a != "-vf"), nvenc.SkipWhile(a => a != "-vf")); // filters and audio untouched
+        var qsv = FfmpegBackend.OnGpu(cpu, "h264_qsv");
+        Assert.Contains("nv12", qsv);
+        Assert.Equal("27", qsv[qsv.IndexOf("-global_quality") + 1]);
+        // x265's CRF already matches the card's HEVC scale, and its log option means nothing there.
+        var hevc = FfmpegBackend.OnGpu(FfmpegBackend.CodecArgs("hevc", new Settings { VideoCrf = 23 }).ToList(), "hevc_nvenc");
+        Assert.Equal("28", hevc[hevc.IndexOf("-cq") + 1]);
+        Assert.DoesNotContain("-x265-params", hevc);
+        Assert.Contains("hvc1", hevc);
+    }
 }

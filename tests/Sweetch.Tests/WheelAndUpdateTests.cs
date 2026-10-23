@@ -37,8 +37,9 @@ public class UpdateTests
           "draft": false,
           "prerelease": false,
           "assets": [
-            { "name": "Sweetch-1.2.0-win-x64.zip", "browser_download_url": "https://example.com/zip" },
-            { "name": "Sweetch-Setup-1.2.0.exe", "browser_download_url": "https://example.com/setup.exe", "digest": "sha256:ABCDEF" }
+            { "name": "Sweetch-1.2-win-x64.zip.sha256", "browser_download_url": "https://example.com/zip.sha256" },
+            { "name": "Sweetch-1.2-win-x64.zip", "browser_download_url": "https://example.com/zip", "digest": "sha256:0123" },
+            { "name": "Sweetch-1.2-Setup-win-x64.exe", "browser_download_url": "https://example.com/setup.exe", "digest": "sha256:ABCDEF" }
           ]
         }
         """;
@@ -50,6 +51,7 @@ public class UpdateTests
         Assert.Equal(new Version(1, 2, 0), info.Version);
         Assert.Equal("https://example.com/setup.exe", info.InstallerUrl);
         Assert.Equal("abcdef", info.InstallerSha256);
+        Assert.Equal(new UpdateInfo.Asset("https://example.com/zip", "0123"), info.Zip);
     }
 
     [Theory]

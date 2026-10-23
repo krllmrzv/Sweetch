@@ -10,7 +10,7 @@ public static class ImageBackend
     {
         var settings = new MagickReadSettings();
         var key = Formats.KeyOf(path);
-        if (key == "svg")
+        if (key is "svg" or "svgz" or "emf" or "wmf")
         {
             settings.Density = new Density(192);
             settings.BackgroundColor = MagickColors.Transparent;
@@ -41,6 +41,9 @@ public static class ImageBackend
         "gif" => MagickFormat.Gif,
         "ico" => MagickFormat.Ico,
         "pdf" => MagickFormat.Pdf,
+        "jxl" => MagickFormat.Jxl,
+        // Edits keep the source format; most names match ImageMagick's (psd, tga, qoi, dds, jp2, exr…).
+        _ when Enum.TryParse<MagickFormat>(format, ignoreCase: true, out var named) && named != MagickFormat.Unknown => named,
         _ => throw new ConversionException(T($"Unsupported image format: {format}", $"Неподдерживаемый формат изображения: {format}")),
     };
 
@@ -79,10 +82,10 @@ public static class ImageBackend
             image.Write(output, ToMagickFormat(format));
         }, ct);
 
-    /// <summary>Formats we can read but not write (SVG) are saved as PNG.</summary>
+    /// <summary>Formats we can read but not write (vector, GIMP, DICOM) are saved as PNG.</summary>
     public static string OutputFormatFor(string inputFormat) => inputFormat switch
     {
-        "svg" => "png",
+        "svg" or "svgz" or "emf" or "wmf" or "xcf" or "dicom" => "png",
         _ when Formats.Raw.Contains(inputFormat) => "jpg",
         _ => inputFormat,
     };

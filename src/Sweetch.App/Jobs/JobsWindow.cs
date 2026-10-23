@@ -65,15 +65,15 @@ internal sealed class JobsWindow : Window
     }
 }
 
-internal sealed class JobCard : Border
+internal sealed class JobCard : Grid
 {
     /// <summary>Off in the self-test, where offscreen rendering doesn't advance animations.</summary>
     public static bool Animate { get; set; } = true;
 
-    private readonly Border _fill = new() { CornerRadius = new CornerRadius(2), Background = Theme.AccentGradient, HorizontalAlignment = HorizontalAlignment.Left, Width = 0 };
+    private readonly Border _fill = new() { CornerRadius = new CornerRadius(2), Background = Theme.Ink, HorizontalAlignment = HorizontalAlignment.Left, Width = 0 };
     private readonly Grid _bar = new() { Height = 4, Margin = new Thickness(0, 10, 0, 0) };
     private readonly TextBlock _status;
-    private readonly StackPanel _buttons;
+    private readonly WrapPanel _buttons;
     private readonly TextBlock _badge;
     private readonly Action<JobCard> _remove;
     private readonly Action _cancel;
@@ -84,13 +84,22 @@ internal sealed class JobCard : Border
     {
         _cancel = cancel;
         _remove = remove;
-        Background = Theme.Panel;
-        BorderBrush = Theme.PanelBorder;
-        BorderThickness = new Thickness(1);
-        CornerRadius = new CornerRadius(14);
         Margin = new Thickness(12, 6, 12, 6);
-        Padding = new Thickness(16, 14, 12, 14);
-        Effect = Theme.Shadow(22);
+        // The shadow is its own cached layer, so progress updates redraw the card but not the blur.
+        Children.Add(new Border
+        {
+            CacheMode = new BitmapCache(),
+            Child = new Border { Background = Theme.Panel, CornerRadius = new CornerRadius(14), Effect = Theme.Shadow(22) },
+        });
+        var surface = new Border
+        {
+            Background = Theme.Panel,
+            BorderBrush = Theme.PanelBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(16, 14, 12, 14),
+        };
+        Children.Add(surface);
 
         var icon = new Grid { Width = 40, Height = 40, Margin = new Thickness(0, 0, 14, 0), VerticalAlignment = VerticalAlignment.Top };
         icon.Children.Add(new Border { CornerRadius = new CornerRadius(10), Background = Theme.Track });
@@ -118,12 +127,13 @@ internal sealed class JobCard : Border
         _bar.SizeChanged += (_, _) => _fill.Width = _bar.ActualWidth * _value;
         StartPulse();
         _status = new TextBlock { Foreground = Theme.Muted, FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
-        _buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, 0) };
-        _buttons.Children.Add(UI.Controls.Button(T("Cancel", "Отмена"), () => _cancel()));
+        // Wraps: "Open" and "Show in folder" don't fit side by side on the narrow card.
+        _buttons = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, -8) };
+        AddButton(UI.Controls.Button(T("Cancel", "Отмена"), () => _cancel()));
 
         var close = new TextBlock
         {
-            Text = "\uE711",
+            Text = Glyphs.Close,
             FontFamily = Theme.Icons,
             FontSize = 10,
             Foreground = Theme.Muted,
@@ -155,7 +165,7 @@ internal sealed class JobCard : Border
         DockPanel.SetDock(icon, Dock.Left);
         row.Children.Add(icon);
         row.Children.Add(body);
-        Child = row;
+        surface.Child = row;
 
         if (!Animate)
             return;
@@ -180,12 +190,16 @@ internal sealed class JobCard : Border
         }
         // Indeterminate state: a short segment breathing until real progress arrives.
         _fill.Width = 48;
-        _fill.BeginAnimation(OpacityProperty, new DoubleAnimation(0.35, 1, TimeSpan.FromMilliseconds(700)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever });
+        // A slow breath needs few frames; 60 per second would redraw the window (and its shadow) all job long.
+        var pulse = new DoubleAnimation(0.35, 1, TimeSpan.FromMilliseconds(700)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+        Timeline.SetDesiredFrameRate(pulse, 12);
+        _fill.BeginAnimation(OpacityProperty, pulse);
     }
 
     public void Report(double value)
     {
-        if (_done || value <= 0)
+        // Downloads report every few kilobytes; a redraw per half percent is plenty.
+        if (_done || value <= 0 || Math.Abs(value - _value) < 0.005)
             return;
         if (_value <= 0)
         {
@@ -200,7 +214,7 @@ internal sealed class JobCard : Border
     {
         _done = true;
         SetFull(warning is null ? Theme.Success : Theme.Error);
-        ShowBadge(warning is null ? "\uE73E" : "\uE7BA", warning is null ? Theme.Success : Theme.Error);
+        ShowBadge(warning is null ? Glyphs.Check : Glyphs.Warning, warning is null ? Theme.Success : Theme.Error);
         _status.Visibility = Visibility.Visible;
         _status.Foreground = warning is null ? Theme.Muted : Theme.Error;
         _status.Text = warning ?? outputs.Count switch
@@ -227,7 +241,7 @@ internal sealed class JobCard : Border
     {
         _done = true;
         SetFull(Theme.Error);
-        ShowBadge("\uE711", Theme.Error);
+        ShowBadge(Glyphs.Close, Theme.Error);
         _status.Visibility = Visibility.Visible;
         _status.Foreground = Theme.Error;
         _status.Text = message;
@@ -269,8 +283,7 @@ internal sealed class JobCard : Border
 
     private void AddButton(Border button)
     {
-        if (_buttons.Children.Count > 0)
-            button.Margin = new Thickness(8, 0, 0, 0);
+        button.Margin = new Thickness(0, 0, 8, 8);
         _buttons.Children.Add(button);
     }
 

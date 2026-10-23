@@ -24,15 +24,25 @@ jobs:
             'canon_r6.CR3' = 'https://raw.pixls.us/data/Canon/EOS%20R6/Canon_EOS_R6_CRAW_ISO_100_nocrop_nodual.CR3'
             'iphone12pro.DNG' = 'https://raw.pixls.us/data/Apple/iPhone%2012%20Pro/IMG_1361.DNG'
           }
+          # The sample site is sometimes down: try a few times, and without samples the RAW test skips
+          # itself instead of failing a release.
+          $got = 0
           foreach ($name in $samples.Keys) {
-            Invoke-WebRequest $samples[$name] -OutFile "raw-samples/$name"
+            for ($i = 1; $i -le 3; $i++) {
+              try { Invoke-WebRequest $samples[$name] -OutFile "raw-samples/$name"; $got++; break }
+              catch { Write-Warning "raw.pixls.us, try ${i}: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * $i) }
+            }
           }
-          "SWEETCH_RAW_SAMPLES=$PWD\raw-samples" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          if ($got -eq $samples.Count) {
+            "SWEETCH_RAW_SAMPLES=$PWD\raw-samples" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          } else {
+            Write-Warning 'RAW samples unavailable: the camera RAW test is skipped in this run.'
+          }
       - name: Test
         run: dotnet test tests/Sweetch.Tests -c Release
       - name: Build
         shell: pwsh
-        run: ./build.ps1
+        run: ./build.ps1 -Version $(if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '2.1.2' })
       - name: Verify packaged app
         shell: pwsh
         run: |
@@ -43,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '1.0' }
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '2.1.2' }
           Compress-Archive -Path ./publish/* -DestinationPath "./artifacts/Sweetch-$version-win-x64.zip"
           ./scripts/build-installer.ps1 -Version $version
           ./scripts/verify-installer.ps1 -Installer "./artifacts/Sweetch-$version-Setup-win-x64.exe"
@@ -68,6 +78,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/release-notes
       - uses: actions/download-artifact@v7
         with:
           name: Sweetch-Windows
@@ -76,5 +89,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Written notes for the tag when there are any (.github/release-notes/v2.0.md), else GitHub's list of changes.
+          notes=".github/release-notes/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then from=(--notes-file "$notes"); else from=(--generate-notes); fi
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "Sweetch ${GITHUB_REF_NAME#v}" --generate-notes artifacts/*
+            --title "Sweetch ${GITHUB_REF_NAME#v}" "${from[@]}" artifacts/*

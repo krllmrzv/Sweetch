@@ -29,21 +29,28 @@ internal static class SelfTest
             Check(Enum.GetValues<Language>().Length == 2, "only English and Russian languages");
             Check(Brand.Trc20 == "TQHTy7kbk3ngYTUfrTpEeSi3hP38tnqJNU", "TRC20 support address");
             Check(Brand.DonatePay == "https://donatepay.ru/don/1539048" && Brand.Channel == "https://t.me/mmmorozov", "project links");
-            var disabledUpdater = new Shell.Updater();
-            Check(disabledUpdater.CheckAsync().GetAwaiter().GetResult() is null && disabledUpdater.LastChecked is null, "updates disabled");
-            log.Add("ok Sweetch 1.0 branding, links, languages and disabled updates");
-            TestBundledPandoc(outDir, log);
-            foreach (var (language, dark, folder) in new[] { (Language.English, true, "en"), (Language.English, false, "en-light"), (Language.Russian, true, "ru"), (Language.Russian, false, "ru-light") })
+            Check(Shell.Updater.Current.Major >= 2, "version from the build");
+            Check(Shell.Updater.ReplaceScript(1, @"C:\Temp\new", @"C:\Users\O'Neil\Свитч").Contains(@"'C:\Users\O''Neil\Свитч'"), "update script quotes paths");
+            log.Add($"ok Sweetch {Shell.Updater.Current} branding, links, languages, updater");
+            TestPandoc(outDir, log);
+            foreach (var (language, dark, low, folder) in new[]
+                     {
+                         (Language.English, true, false, "en"), (Language.English, false, false, "en-light"),
+                         (Language.Russian, true, false, "ru"), (Language.Russian, false, false, "ru-light"),
+                         (Language.Russian, true, true, "ru-low"), (Language.Russian, false, true, "ru-light-low"),
+                     })
             {
                 Loc.Current = language;
                 Theme.Override = dark;
+                Theme.LowContrast = low;
                 Theme.Refresh();
                 RenderAll(Path.Combine(outDir, folder), language == Language.English, log);
             }
 
+            TestSpeed(log);
             log.AddRange(SmokeTest.Run(Path.Combine(outDir, "smoke")));
             // Saved after every step, so a hard crash (which skips the catch below) still shows where it stopped.
-            foreach (var step in new Action[] { () => TestSettingsRoundTrip(log), () => TestExplorerCom(outDir, log), () => TestDrops(log), () => TestWatchFolder(outDir, log), () => TestOcr(outDir, log), () => log.Add("ok updates disabled: no network request") })
+            foreach (var step in new Action[] { () => TestSettingsRoundTrip(log), () => TestExplorerCom(outDir, log), () => TestDrops(log), () => TestWatchFolder(outDir, log), () => TestOcr(outDir, log), () => log.Add("ok updates: checked by the app, not by the self-test") })
             {
                 File.WriteAllLines(Path.Combine(outDir, "self-test.txt"), log);
                 step();
@@ -71,7 +78,8 @@ internal static class SelfTest
     {
         Directory.CreateDirectory(outDir);
         string N(string cs, string en) => english ? en : cs;
-        var settings = new AppSettings();
+        // Previews look the same whatever this machine has installed; the strip gets its own picture below.
+        var settings = new AppSettings { HideMissingTools = true };
         var tools = new ToolLocator();
         var core = WheelController.BuildOperations();
         var actions = Sweetchs.Build(settings, () => { });
@@ -95,8 +103,29 @@ internal static class SelfTest
             var window = new WheelWindow(s.Mode, s.Wheel, s.Files.Select(f => new FileItem(f)).ToList(), settings, Source, (_, _) => { });
             window.RenderPreview(Path.Combine(outDir, s.Name + ".png"), s.Highlight);
             window.Close();
+            // Large, on transparent, for the README artwork (scripts/build-readme-art.py).
+            if (s.Name is "wheel-image-convert" or "wheel-image-tools" or "wheel-actions")
+            {
+                var art = new WheelWindow(s.Mode, s.Wheel, s.Files.Select(f => new FileItem(f)).ToList(), settings, Source, (_, _) => { });
+                art.RenderPreview(Path.Combine(outDir, "art-" + s.Name + ".png"), s.Highlight, clear: true);
+                art.Close();
+            }
             log.Add($"ok {Path.GetFileName(outDir)}/{s.Name}");
         }
+        // The other side, after a scroll: rare formats, in the back-side colours.
+        foreach (var (name, file, mode) in new[] { ("wheel-image-convert-back", N(@"C:\Fotky\dovolená.jpg", @"C:\Photos\vacation.jpg"), WheelMode.Drag), ("wheel-doc-convert-back", @"C:\a.md", WheelMode.Click) })
+        {
+            var flipped = new WheelWindow(mode, WheelKind.Convert, [new FileItem(file)], settings, Source, (_, _) => { });
+            flipped.Scroll(-120);
+            flipped.RenderPreview(Path.Combine(outDir, name + ".png"), 1);
+            flipped.Close();
+        }
+        // Once a wheel has been turned, the pager stays quiet in the hub colour.
+        var learned = new WheelWindow(WheelMode.Drag, WheelKind.Convert, [new FileItem("vacation.jpg")], settings, Source, (_, _) => { });
+        learned.RenderPreview(Path.Combine(outDir, "wheel-image-convert-learned.png"), -1);
+        learned.Close();
+        settings.FlipLearned = false;
+        log.Add($"ok {Path.GetFileName(outDir)}/wheel back sides");
 
         SettingsWindow.Operations = () => [.. core, .. actions];
         settings.FavoriteOperations = ["image.to.webp", "image.compress"];
@@ -112,6 +141,38 @@ internal static class SelfTest
             var file = page == SettingsPage.General ? "settings" : "settings-" + page.ToString().ToLowerInvariant();
             SaveWindow(settingsWindow, Path.Combine(outDir, file + ".png"), page == SettingsPage.Wheels ? 1240 : 1000);
             settingsWindow.Close();
+            // The smallest window the user can make.
+            var narrow = new SettingsWindow(settings, tools, () => { });
+            narrow.Width = narrow.MinWidth;
+            narrow.Page = page;
+            narrow.ExpandForPreview();
+            SaveWindow(narrow, Path.Combine(outDir, "narrow-" + file + ".png"), narrow.MinWidth);
+            narrow.Close();
+            if (page == SettingsPage.General)
+            {
+                settings.HideMissingTools = false;
+                var strip = new SettingsWindow(settings, new ToolLocator(Path.GetTempPath()), () => { });
+                strip.ExpandForPreview();
+                SaveWindow(strip, Path.Combine(outDir, "settings-missing-tools.png"), 1000);
+                strip.Close();
+                settings.HideMissingTools = true;
+                // As the window opens, with the slim scroll bar.
+                var scrolled = new SettingsWindow(settings, tools, () => { });
+                SaveWindow(scrolled, Path.Combine(outDir, "narrow-scroll.png"), scrolled.MinWidth, height: scrolled.MinHeight);
+                scrolled.Close();
+            }
+            if (page == SettingsPage.Helpers)
+            {
+                // A program's formats opened, and a search for a format.
+                foreach (var (name, query) in new[] { ("expanded", ""), ("search", "pages") })
+                {
+                    var helpers = new SettingsWindow(settings, tools, () => { }) { Page = page };
+                    helpers.PreviewTools(query, ExternalTool.Ffmpeg);
+                    helpers.ExpandForPreview();
+                    SaveWindow(helpers, Path.Combine(outDir, $"settings-helpers-{name}.png"), 1000);
+                    helpers.Close();
+                }
+            }
             log.Add($"ok {Path.GetFileName(outDir)}/{file}");
         }
         var presetDialog = new PresetDialog(web);
@@ -121,6 +182,13 @@ internal static class SelfTest
         SaveWindow(watchDialog, Path.Combine(outDir, "watch-dialog.png"), 640);
         watchDialog.Close();
         log.Add($"ok {Path.GetFileName(outDir)}/preset and watch dialogs");
+        for (var step = 0; step < 4; step++)
+        {
+            var tutorial = TutorialWindow.ForPreview(settings, step);
+            SaveWindow(tutorial, Path.Combine(outDir, $"tutorial-{step + 1}.png"), 900);
+            tutorial.Close();
+        }
+        log.Add($"ok {Path.GetFileName(outDir)}/tutorial");
 
         var toolsWheel = new SettingsWindow(settings, tools, () => { });
         toolsWheel.ShowWheel(WheelKind.Tools, 0);
@@ -134,10 +202,13 @@ internal static class SelfTest
         feedback.Close();
         log.Add($"ok {Path.GetFileName(outDir)}/feedback");
 
+        // A result that exists, so the card shows both "Open" and "Show in folder" as it does for real.
+        var done = Path.Combine(outDir, N("dovolená (komprimováno).jpg", "vacation (compressed).jpg"));
+        File.WriteAllBytes(done, []);
         var jobs = new JobsWindow();
         var running = jobs.Add(N("Převod na MP4", "Convert to MP4"), N("klip.mov", "clip.mov"), () => { }, @"C:\x.mov");
         running.Report(0.42);
-        jobs.Add(N("Komprimovat", "Compress"), N("dovolená.jpg", "vacation.jpg"), () => { }, @"C:\x.jpg").Complete([N(@"C:\Fotky\dovolená (komprimováno).jpg", @"C:\Photos\vacation (compressed).jpg")], null);
+        jobs.Add(N("Komprimovat", "Compress"), N("dovolená.jpg", "vacation.jpg"), () => { }, @"C:\x.jpg").Complete([done], null);
         jobs.Add(N("Převod na DOCX", "Convert to DOCX"), N("smlouva.pdf", "contract.pdf"), () => { }, @"C:\x.pdf").Fail(N("Chybí nástroj Pandoc. Nainstalujte ho příkazem: ", "Pandoc is missing. Install it with: ") + "winget install JohnMacFarlane.Pandoc");
         SaveWindow(jobs, Path.Combine(outDir, "jobs.png"), 380, desktop: true);
         jobs.Close();
@@ -165,6 +236,69 @@ internal static class SelfTest
     }
 
     /// <summary>The settings file is written with source-generated JSON (no reflection in the trimmed build).</summary>
+    /// <summary>How long the wheel and Settings take to open (logged only: CI machines vary too much for a limit).</summary>
+    private static void TestSpeed(List<string> log)
+    {
+        var settings = new AppSettings();
+        var tools = new ToolLocator();
+        var core = WheelController.BuildOperations();
+        IReadOnlyList<Operation> Source(WheelKind wheel, IReadOnlyList<FileItem> items) => Catalog.For(core, wheel, items, tools);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        double Median(Func<double> measure) => Enumerable.Range(0, 7).Select(_ => measure()).Order().ElementAt(3);
+        double Time(Action action)
+        {
+            clock.Restart();
+            action();
+            return clock.Elapsed.TotalMilliseconds;
+        }
+
+        IReadOnlyList<FileItem> photo = [new(@"C:\Photos\vacation.jpg")];
+        var open = Median(() =>
+        {
+            var spare = new WheelWindow(WheelMode.Drag, WheelKind.Convert, null, settings, Source, (_, _) => { });
+            spare.Prepare();
+            var ms = Time(() =>
+            {
+                spare.Reset(WheelKind.Convert, photo);
+                spare.ShowAt(new Native.Win32.POINT { X = -20000, Y = -20000 });
+                spare.UpdateLayout();
+            });
+            spare.Finish();
+            return ms;
+        });
+        var wheel = new WheelWindow(WheelMode.Drag, WheelKind.Tools, photo, settings, Source, (_, _) => { });
+        wheel.Prepare();
+        var switching = Median(() => Time(() =>
+        {
+            wheel.SwitchTo(wheel.CurrentWheel == WheelKind.Tools ? WheelKind.Convert : WheelKind.Tools);
+            wheel.UpdateLayout();
+        }));
+        wheel.Finish();
+        SettingsWindow.Operations = () => core;
+        var settingsOpen = Median(() =>
+        {
+            SettingsWindow? window = null;
+            var ms = Time(() =>
+            {
+                window = new SettingsWindow(settings, tools, () => { }) { Left = -20000, Top = -20000, ShowActivated = false };
+                window.Show();
+                window.UpdateLayout();
+            });
+            window!.Close();
+            return ms;
+        });
+        var pages = new SettingsWindow(settings, tools, () => { }) { Left = -20000, Top = -20000, ShowActivated = false };
+        pages.Show();
+        var pageTimes = Enum.GetValues<SettingsPage>().Select(page => $"{page} {Median(() => Time(() =>
+        {
+            pages.Page = SettingsPage.General;
+            pages.Page = page;
+            pages.UpdateLayout();
+        })):0}").ToList();
+        pages.Close();
+        log.Add($"ok speed: wheel opens in {open:0.0} ms, switches in {switching:0.0} ms, settings open in {settingsOpen:0} ms; pages (ms): {string.Join(", ", pageTimes)}");
+    }
+
     private static void TestSettingsRoundTrip(List<string> log)
     {
         var settings = new AppSettings { Hotkey = HotkeyPreset.CtrlAltW, FavoriteOperations = ["image.to.webp"], Language = Language.Russian, Appearance = AppAppearance.Light };
@@ -173,18 +307,23 @@ internal static class SelfTest
         Check(back.Hotkey == HotkeyPreset.CtrlAltW && back.FavoriteOperations.Single() == "image.to.webp" && back.Language == Language.Russian, "settings JSON round trip");
         Check(json.Contains("\"CtrlAltW\""), "enums stored as names");
         Check(back.Appearance == AppAppearance.Light, "theme setting round trip");
-        Check(AppSettings.Folder.EndsWith("Sweetch") && !new AppSettings().CheckForUpdates, "isolated settings and updates off by default");
+        Check(AppSettings.Folder.EndsWith("Sweetch") && new AppSettings().AutoUpdateCheck, "isolated settings and update checks on by default");
         log.Add("ok settings json");
     }
 
-    private static void TestBundledPandoc(string outDir, List<string> log)
+    /// <summary>Pandoc is downloaded on first use: fetch it the way the app does (when missing), then convert.</summary>
+    private static void TestPandoc(string outDir, List<string> log)
     {
-        var exe = Path.Combine(AppContext.BaseDirectory, "tools", "pandoc.exe");
-        Check(File.Exists(exe), "Pandoc is included in the application folder");
-        Check(!Shell.ToolInstaller.CanInstall(ExternalTool.Pandoc), "Pandoc never requires a download");
+        Check(Shell.ToolInstaller.CanInstall(ExternalTool.Pandoc), "Pandoc downloads on demand");
         var tools = new ToolLocator();
-        Check(string.Equals(tools.Pandoc, exe, StringComparison.OrdinalIgnoreCase), "bundled Pandoc takes priority over PATH");
-        var dir = Path.Combine(outDir, "bundled-pandoc");
+        var downloaded = tools.Pandoc is null;
+        if (downloaded)
+        {
+            Shell.ToolInstaller.InstallAsync(ExternalTool.Pandoc, new Progress<double>(), default).GetAwaiter().GetResult();
+            tools.Refresh();
+        }
+        Check(tools.Pandoc is not null, "Pandoc found after the download");
+        var dir = Path.Combine(outDir, "pandoc");
         Directory.CreateDirectory(dir);
         var md = Path.Combine(dir, "проверка.md");
         var docx = Path.Combine(dir, "проверка.docx");
@@ -198,7 +337,7 @@ internal static class SelfTest
         }).GetAwaiter().GetResult();
         var text = File.ReadAllText(txt);
         Check(text.Contains("Sweetch offline 12345") && text.Contains("Проверка офлайн"), "offline Markdown / DOCX / TXT round trip");
-        log.Add("ok bundled Pandoc: offline Markdown -> DOCX -> TXT, Cyrillic preserved");
+        log.Add($"ok Pandoc ({(downloaded ? "downloaded, SHA-256 checked" : "found")}): Markdown -> DOCX -> TXT, Cyrillic preserved");
     }
 
     /// <summary>Reading the Explorer selection goes through late-bound COM, which trimming could break.</summary>
@@ -351,13 +490,14 @@ internal static class SelfTest
             throw new InvalidOperationException("Self-test check failed: " + what);
     }
 
-    private static void SaveWindow(Window window, string file, double width, bool desktop = false)
+    private static void SaveWindow(Window window, string file, double width, bool desktop = false, double height = double.NaN)
     {
         var content = (UIElement)window.Content;
         window.Content = null;
         var root = new Border
         {
             Width = width,
+            Height = height,
             Background = desktop ? Desktop() : window.Background ?? Brushes.White,
             Child = content,
         };
@@ -371,13 +511,12 @@ internal static class SelfTest
         ? new LinearGradientBrush(Color.FromRgb(0x1F, 0x2A, 0x44), Color.FromRgb(0x3A, 0x2A, 0x4A), 45)
         : new LinearGradientBrush(Color.FromRgb(0xC9, 0xD8, 0xEE), Color.FromRgb(0xE9, 0xD9, 0xEE), 45);
 
-    public static void SaveElement(FrameworkElement element, string file)
+    public static void SaveElement(FrameworkElement element, string file, double scale = 1.5)
     {
         element.Measure(new Size(element.Width > 0 ? element.Width : 800, double.PositiveInfinity));
         var size = element.DesiredSize;
         element.Arrange(new Rect(size));
         element.UpdateLayout();
-        const double scale = 1.5;
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(size.Width * scale), (int)Math.Ceiling(size.Height * scale), 96 * scale, 96 * scale, PixelFormats.Pbgra32);
         bitmap.Render(element);
         var encoder = new PngBitmapEncoder();

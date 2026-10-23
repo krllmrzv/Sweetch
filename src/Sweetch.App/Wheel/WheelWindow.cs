@@ -1,9 +1,9 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using Sweetch.App.Native;
@@ -22,41 +22,47 @@ internal enum WheelMode
     Click,
 }
 
-/// <summary>The radial menu. One instance per appearance.</summary>
+/// <summary>
+/// The radial menu. One instance per appearance.
+/// <para>
+/// Slices are solid blocks in the colour of the key that opened the wheel; the slice under the
+/// pointer turns ink (light theme) or paper (dark theme). Nothing moves, glows or fades in one by one.
+/// </para>
+/// </summary>
 internal sealed class WheelWindow : Window
 {
     public delegate IReadOnlyList<Operation> OperationSource(WheelKind wheel, IReadOnlyList<FileItem> items);
 
-    private const double OuterRadius = 196;
-    private const double InnerRadius = 80;
-    private const double Rim = 9;
-    private const double Gap = 6;
-    private const double Corner = 11;
-    private const double PopOut = 7;
+    /// <summary>Radius of the dark (or white) disc behind the slices.</summary>
+    private const double Disc = 212;
+    private const double OuterRadius = 204;
+    private const double InnerRadius = 76;
+    private const double HubRadius = 72;
+    private const double Gap = 8;
+    private const double Corner = 14;
 
     /// <summary>Room around the disc for its shadow.</summary>
-    private const double Pad = 16;
-    private const double Size = 2 * (OuterRadius + Rim + Pad);
+    private const double Pad = 18;
+    private const double Size = 2 * (Disc + Pad);
     private static readonly WheelKind[] WheelOrder = [WheelKind.Convert, WheelKind.Tools, WheelKind.Actions];
 
     private readonly AppSettings _settings;
     private readonly OperationSource _source;
     private readonly Action<Operation, IReadOnlyList<FileItem>> _execute;
     private readonly Canvas _canvas = new() { Width = Size, Height = Size };
-    private readonly List<Path> _slices = [];
+    private readonly List<SolidColorBrush> _fills = [];
     private readonly List<StackPanel> _labels = [];
-    private readonly List<Canvas> _groups = [];
-    private readonly Image _icon = new() { Width = 32, Height = 32, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 4) };
-    private readonly TextBlock _iconGlyph = new() { FontSize = 24, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 6) };
-    private readonly TextBlock _title = HubText(16, FontWeights.SemiBold);
-    private readonly TextBlock _detail = HubText(11.5, FontWeights.Normal);
-    private readonly StackPanel _tabs = new() { Orientation = Orientation.Horizontal };
-    private readonly Border _tabTrack = new() { CornerRadius = new CornerRadius(10), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 0) };
-    private readonly StackPanel _hubContent = new() { Width = InnerRadius * 1.75 };
+    private Hub _hub = null!;
 
     private IReadOnlyList<FileItem> _items;
     private IReadOnlyList<Operation> _ops = [];
     private WheelKind _wheel;
+
+    // Two sides: the usual slices and the rare ones; scrolling flips between them.
+    private bool _back;
+    private int _otherSide;
+    private int _scrolled;
+    private DateTime _flippedAt;
     private int _highlight = -1;
     private Win32.POINT _anchor;
     private bool _finished;
@@ -95,15 +101,6 @@ internal sealed class WheelWindow : Window
         FontFamily = Theme.UiFont;
         Focusable = true;
         Content = _canvas;
-        _canvas.RenderTransformOrigin = new Point(0.5, 0.5);
-        _canvas.RenderTransform = new ScaleTransform(0.9, 0.9);
-        _tabTrack.Child = _tabs;
-        _iconGlyph.FontFamily = Theme.Icons;
-        _hubContent.Children.Add(_icon);
-        _hubContent.Children.Add(_iconGlyph);
-        _hubContent.Children.Add(_title);
-        _hubContent.Children.Add(_detail);
-        _hubContent.Children.Add(_tabTrack);
 
         SourceInitialized += (_, _) =>
         {
@@ -126,6 +123,11 @@ internal sealed class WheelWindow : Window
                 SetHighlight(HitTest(e.GetPosition(_canvas), out bool _));
         };
         MouseLeftButtonUp += OnClick;
+        MouseWheel += (_, e) =>
+        {
+            e.Handled = true;
+            Scroll(e.Delta);
+        };
         KeyDown += OnKeyDown;
         Deactivated += (_, _) =>
         {
@@ -142,27 +144,47 @@ internal sealed class WheelWindow : Window
     public WheelKind CurrentWheel => _wheel;
 
     /// <summary>The last operation if it fits these items (for the "repeat last" view).</summary>
-    public Func<IReadOnlyList<FileItem>, Operation?>? LastOperation { get; init; }
+    public Func<IReadOnlyList<FileItem>, Operation?>? LastOperation { get; set; }
+
+    /// <summary>Called once the person has turned a wheel for the first time (the app saves the settings).</summary>
+    public Action? Learned { get; set; }
 
     /// <summary>Runs the last operation again with the values it used last time.</summary>
-    public Action<IReadOnlyList<FileItem>>? RunRepeat { get; init; }
+    public Action<IReadOnlyList<FileItem>>? RunRepeat { get; set; }
+
+    /// <summary>
+    /// Creates the window off screen and invisible, so a later <see cref="ShowAt"/> skips the costly first
+    /// show (window handle, layered surface, first layout). The controller keeps one such spare ready.
+    /// </summary>
+    public void Prepare() => Show();
+
+    /// <summary>Points a prepared spare at the wheel and items it is opened for.</summary>
+    public void Reset(WheelKind wheel, IReadOnlyList<FileItem>? items)
+    {
+        _wheel = wheel;
+        _items = items ?? [];
+        _repeat = false;
+        _back = false;
+        LoadOperations();
+        Build();
+    }
 
     public bool IsFinished => _finished;
 
-    private IntPtr Handle => new WindowInteropHelper(this).Handle;
+    public IntPtr Handle => new WindowInteropHelper(this).Handle;
+
+    private Color KeyColor => Theme.KeyColor(_settings.KeyFor(_wheel), _wheel);
+
+    private Color KeyStrong => Theme.KeyStrongColor(_settings.KeyFor(_wheel), _wheel);
 
     public void ShowAt(Win32.POINT screenPoint)
     {
         _anchor = screenPoint;
-        Show();
+        if (!IsVisible)
+            Show();
         PositionAtAnchor();
-        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        var duration = TimeSpan.FromMilliseconds(140);
-        BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, duration) { EasingFunction = ease });
-        var scale = (ScaleTransform)_canvas.RenderTransform;
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.9, 1, duration) { EasingFunction = ease });
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.9, 1, duration) { EasingFunction = ease });
-        AnimateSlicesIn();
+        // Appears at once: no fade or zoom, so the wheel is usable the moment the key is pressed.
+        Opacity = 1;
 
         if (Mode == WheelMode.Click)
         {
@@ -186,14 +208,17 @@ internal sealed class WheelWindow : Window
     }
 
     /// <summary>True when a physical screen point lies on the wheel.</summary>
-    public bool Contains(Win32.POINT p)
+    public bool Contains(Win32.POINT p) => Contains(Handle, p);
+
+    /// <summary>The same test from any thread, by window handle (the mouse hook asks it on its own thread).</summary>
+    public static bool Contains(IntPtr handle, Win32.POINT p)
     {
-        if (!Win32.GetWindowRect(Handle, out var rect))
+        if (handle == IntPtr.Zero || !Win32.GetWindowRect(handle, out var rect))
             return false;
         var scale = (rect.Right - rect.Left) / Size;
         var cx = (rect.Left + rect.Right) / 2.0;
         var cy = (rect.Top + rect.Bottom) / 2.0;
-        var radius = (OuterRadius + Rim) * scale;
+        var radius = Disc * scale;
         return Math.Pow(p.X - cx, 2) + Math.Pow(p.Y - cy, 2) <= radius * radius;
     }
 
@@ -203,9 +228,40 @@ internal sealed class WheelWindow : Window
             return;
         _wheel = wheel;
         _repeat = false;
+        _back = false;
         LoadOperations();
         Build();
-        AnimateSlicesIn();
+        if (Mode == WheelMode.Click && _ops.Count > 0)
+            SetHighlight(0);
+    }
+
+    /// <summary>
+    /// The mouse wheel turned (over the wheel, or anywhere over it while dragging). Touchpads send many
+    /// small steps, so it flips once per notch and not more often than four times a second.
+    /// </summary>
+    public void Scroll(int delta)
+    {
+        _scrolled += delta;
+        if (Math.Abs(_scrolled) < 120 || DateTime.UtcNow - _flippedAt < TimeSpan.FromMilliseconds(250))
+            return;
+        _scrolled = 0;
+        _flippedAt = DateTime.UtcNow;
+        Flip();
+    }
+
+    /// <summary>Shows the other side: rare slices, or back to the usual ones.</summary>
+    public void Flip()
+    {
+        if (_finished || _repeat || _otherSide == 0)
+            return;
+        _back = !_back;
+        if (!_settings.FlipLearned)
+        {
+            _settings.FlipLearned = true;
+            Learned?.Invoke();
+        }
+        LoadOperations();
+        Build();
         if (Mode == WheelMode.Click && _ops.Count > 0)
             SetHighlight(0);
     }
@@ -223,7 +279,6 @@ internal sealed class WheelWindow : Window
         _repeat = true;
         LoadOperations();
         Build();
-        AnimateSlicesIn();
         if (Mode == WheelMode.Click && _ops.Count > 0)
             SetHighlight(0);
     }
@@ -233,7 +288,7 @@ internal sealed class WheelWindow : Window
     {
         if (Mode != WheelMode.Drag || _finished)
             return;
-        _closeTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Normal, (_, _) => Finish(), Dispatcher);
+        _closeTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Normal, (_, _) => Finish(), Dispatcher);
         _closeTimer.Start();
     }
 
@@ -246,35 +301,32 @@ internal sealed class WheelWindow : Window
         Close();
     }
 
-    /// <summary>Renders the wheel to a PNG without showing it (used by --self-test).</summary>
-    public void RenderPreview(string file, int highlight)
+    /// <summary>Renders the wheel to a PNG without showing it (used by --self-test); <paramref name="clear"/> leaves the background transparent.</summary>
+    public void RenderPreview(string file, int highlight, bool clear = false)
     {
-        _canvas.RenderTransform = Transform.Identity;
-        foreach (var group in _groups)
-        {
-            // Offscreen rendering doesn't advance animations; show the final state.
-            group.BeginAnimation(OpacityProperty, null);
-            var scale = (ScaleTransform)((TransformGroup)group.RenderTransform).Children[0];
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        }
         if (highlight >= 0 && highlight < _ops.Count)
             SetHighlight(highlight);
         Content = null;
-        var root = new Grid { Background = SelfTest.Desktop(), Width = Size, Height = Size };
+        var root = new Grid { Background = clear ? Brushes.Transparent : SelfTest.Desktop(), Width = Size, Height = Size };
         root.Children.Add(_canvas);
         _canvas.HorizontalAlignment = HorizontalAlignment.Center;
         _canvas.VerticalAlignment = VerticalAlignment.Center;
-        SelfTest.SaveElement(root, file);
+        SelfTest.SaveElement(root, file, clear ? 3 : 1.5);
     }
 
     // ------------------------------------------------------------------ data
 
     private void LoadOperations()
     {
-        _ops = _items.Count == 0 ? []
+        IReadOnlyList<Operation> all = _items.Count == 0 ? []
             : _repeat ? (LastOperation?.Invoke(_items) is { } last ? [last] : [])
             : _source(_wheel, _items);
+        var back = _repeat ? [] : all.Where(_settings.IsBackSide).ToList();
+        var front = _repeat ? all.ToList() : all.Where(o => !_settings.IsBackSide(o)).ToList();
+        // A side with nothing on it is never shown: files whose every slice is rare open on that side.
+        _back = back.Count > 0 && (_back || front.Count == 0);
+        _ops = _back ? back : front;
+        _otherSide = _back ? front.Count : back.Count;
         _highlight = -1;
     }
 
@@ -295,7 +347,6 @@ internal sealed class WheelWindow : Window
             _items = preview.Items;
             LoadOperations();
             Build();
-            AnimateSlicesIn();
         }
         _closeTimer?.Stop();
         var index = HitTest(e.GetPosition(_canvas), out _);
@@ -372,7 +423,11 @@ internal sealed class WheelWindow : Window
                 if (_highlight >= 0)
                     Run(_highlight);
                 break;
+            case Key.Tab when _otherSide > 0:
+                Flip();
+                break;
             case Key.Tab:
+                // One page: Tab goes on to the next wheel, as before pages existed.
                 var next = (Array.IndexOf(WheelOrder, _wheel) + (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 2 : 1)) % WheelOrder.Length;
                 SwitchTo(WheelOrder[next]);
                 break;
@@ -444,7 +499,7 @@ internal sealed class WheelWindow : Window
         var dy = p.Y - Size / 2;
         var r = Math.Sqrt(dx * dx + dy * dy);
         inHub = r < InnerRadius;
-        if (inHub || r > OuterRadius + Rim || _ops.Count == 0)
+        if (inHub || r > Disc || _ops.Count == 0)
             return -1;
         var angle = (Math.Atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
         var step = 360.0 / _ops.Count;
@@ -452,414 +507,498 @@ internal sealed class WheelWindow : Window
     }
 
     /// <summary>
-    /// A ring segment between angles <paramref name="a0"/> and <paramref name="a1"/> with a constant-width gap
-    /// to its neighbours and rounded corners.
+    /// A ring segment between <paramref name="a0"/> and <paramref name="a1"/>, shrunk by the corner radius on
+    /// every side. Drawn with a round-joined stroke of twice that radius in the same colour, it grows back
+    /// to full size with evenly rounded corners and a constant gap to its neighbours.
     /// </summary>
     private static Geometry Sector(double a0, double a1)
     {
-        // Angle of a point on an edge that is shifted sideways by half the gap, at radius r.
-        double Edge(double r, double a, int side) => a + side * Deg(Math.Asin(Gap / 2 / r));
-
-        var outerStart = Edge(OuterRadius, a0, 1);
-        var outerEnd = Edge(OuterRadius, a1, -1);
-        var innerStart = Edge(InnerRadius, a0, 1);
-        var innerEnd = Edge(InnerRadius, a1, -1);
-        var cOut = Math.Min(Corner, Rad(outerEnd - outerStart) * OuterRadius * 0.45);
-        var cIn = Math.Min(Corner * 0.7, Rad(innerEnd - innerStart) * InnerRadius * 0.45);
-        var dOut = Deg(cOut / OuterRadius);
-        var dIn = Deg(cIn / InnerRadius);
-
-        var start = Polar(OuterRadius, outerStart + dOut);
-        var figure = new PathFigure { StartPoint = start, IsClosed = true, IsFilled = true };
-        figure.Segments.Add(new ArcSegment(Polar(OuterRadius, outerEnd - dOut), new System.Windows.Size(OuterRadius, OuterRadius), 0,
-            outerEnd - outerStart - 2 * dOut > 180, SweepDirection.Clockwise, true));
-        figure.Segments.Add(new QuadraticBezierSegment(Polar(OuterRadius, outerEnd), Polar(OuterRadius - cOut, Edge(OuterRadius - cOut, a1, -1)), true));
-        figure.Segments.Add(new LineSegment(Polar(InnerRadius + cIn, Edge(InnerRadius + cIn, a1, -1)), true));
-        figure.Segments.Add(new QuadraticBezierSegment(Polar(InnerRadius, innerEnd), Polar(InnerRadius, innerEnd - dIn), true));
-        figure.Segments.Add(new ArcSegment(Polar(InnerRadius, innerStart + dIn), new System.Windows.Size(InnerRadius, InnerRadius), 0,
-            innerEnd - innerStart - 2 * dIn > 180, SweepDirection.Counterclockwise, true));
-        figure.Segments.Add(new QuadraticBezierSegment(Polar(InnerRadius, innerStart), Polar(InnerRadius + cIn, Edge(InnerRadius + cIn, a0, 1)), true));
-        figure.Segments.Add(new LineSegment(Polar(OuterRadius - cOut, Edge(OuterRadius - cOut, a0, 1)), true));
-        figure.Segments.Add(new QuadraticBezierSegment(Polar(OuterRadius, outerStart), start, true));
+        var d = Gap / 2 + Corner;
+        var ro = OuterRadius - Corner;
+        var ri = InnerRadius + Corner;
+        double Off(double r) => Deg(Math.Asin(d / r));
+        var outerStart = a0 + Off(ro);
+        var outerEnd = a1 - Off(ro);
+        var innerStart = a0 + Off(ri);
+        var innerEnd = a1 - Off(ri);
+        var figure = new PathFigure { StartPoint = Polar(ro, outerStart), IsClosed = true, IsFilled = true };
+        figure.Segments.Add(new ArcSegment(Polar(ro, outerEnd), new System.Windows.Size(ro, ro), 0, outerEnd - outerStart > 180, SweepDirection.Clockwise, true));
+        figure.Segments.Add(new LineSegment(Polar(ri, innerEnd), true));
+        figure.Segments.Add(new ArcSegment(Polar(ri, innerStart), new System.Windows.Size(ri, ri), 0, innerEnd - innerStart > 180, SweepDirection.Counterclockwise, true));
         var geometry = new PathGeometry([figure]);
         geometry.Freeze();
         return geometry;
-
-        static double Rad(double degrees) => degrees * Math.PI / 180;
     }
 
+    /// <summary>A whole ring (one slice), drawn as a thick circle.</summary>
     private static Geometry Ring()
     {
-        var center = new Point(Size / 2, Size / 2);
-        var ring = new CombinedGeometry(GeometryCombineMode.Exclude,
-            new EllipseGeometry(center, OuterRadius, OuterRadius),
-            new EllipseGeometry(center, InnerRadius, InnerRadius));
+        var r = (OuterRadius + InnerRadius) / 2;
+        var ring = new EllipseGeometry(new Point(Size / 2, Size / 2), r, r);
         ring.Freeze();
         return ring;
     }
 
-    // ------------------------------------------------------------------ visuals
-
-    private static TextBlock HubText(double size, FontWeight weight) => new()
+    /// <summary>
+    /// Where a label goes: the centre of mass of its slice, which is where the eye puts the middle of a
+    /// wedge, but never inside the middle of the ring (for 2–5 slices the centroid drifts towards the hub).
+    /// </summary>
+    private static double LabelRadius(int n)
     {
-        FontSize = size,
-        FontWeight = weight,
-        TextAlignment = TextAlignment.Center,
-        TextTrimming = TextTrimming.CharacterEllipsis,
-        HorizontalAlignment = HorizontalAlignment.Center,
-        MaxWidth = InnerRadius * 1.65,
+        var mid = (OuterRadius + InnerRadius) / 2;
+        if (n <= 1)
+            return mid;
+        const double ro = OuterRadius;
+        const double ri = InnerRadius;
+        var half = Math.PI / n;
+        var centroid = 2.0 / 3 * (ro * ro * ro - ri * ri * ri) / (ro * ro - ri * ri) * Math.Sin(half) / half;
+        return Math.Max(mid, centroid);
+    }
+
+    /// <summary>Usable width across a slice at a given radius, leaving a margin inside the gap.</summary>
+    private static double Chord(int n, double radius) =>
+        n <= 2 ? 2 * radius : 2 * radius * Math.Sin(Math.PI / n) - Gap - 14;
+
+    /// <summary>Every label in a wheel wraps at the same width, so twins on the left and right wrap the same way.</summary>
+    private static double LabelWidth(int n, double radius) =>
+        n <= 2 ? 132 : Math.Clamp(Chord(n, radius), 60, 132);
+
+    /// <summary>The more slices, the smaller the icon; the text stays large enough to read.</summary>
+    private static (double Icon, double Text, double Format) LabelSizes(int n) => n switch
+    {
+        <= 6 => (30, 14.5, 26),
+        <= 8 => (26, 14, 24),
+        <= 10 => (22, 14, 22),
+        _ => (19, 13.5, 20),
     };
+
+    /// <summary>
+    /// True when an upright box of this size, centred at <paramref name="radius"/> on the slice's middle
+    /// angle, lies inside the slice with a margin: points around its outline must clear the hub, the rim
+    /// and both side gaps.
+    /// </summary>
+    private static bool FitsInSlice(int n, double angle, double radius, double width, double height)
+    {
+        const double margin = 7;
+        var mid = angle * Math.PI / 180;
+        var cx = radius * Math.Sin(mid);
+        var cy = -radius * Math.Cos(mid);
+        var half = Math.PI / n;
+        var (cos0, sin0) = (Math.Cos(mid - half), Math.Sin(mid - half));
+        var (cos1, sin1) = (Math.Cos(mid + half), Math.Sin(mid + half));
+        for (var i = 0; i <= 4; i++)
+        {
+            var t = i / 4.0;
+            foreach (var (fx, fy) in new[] { (t, 0.0), (t, 1.0), (0.0, t), (1.0, t) })
+            {
+                var x = cx + (fx - 0.5) * width;
+                var y = cy + (fy - 0.5) * height;
+                var r = Math.Sqrt(x * x + y * y);
+                if (r < InnerRadius + margin + 2 || r > OuterRadius - margin)
+                    return false;
+                // Distance from each side of the wedge, measured towards the inside.
+                if (n > 1 && (x * cos0 + y * sin0 < Gap / 2 + margin || -(x * cos1 + y * sin1) < Gap / 2 + margin))
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>The largest scale (up to 1) at which a label still fits its slice.</summary>
+    private static double FitScale(int n, double angle, double radius, System.Windows.Size size)
+    {
+        if (FitsInSlice(n, angle, radius, size.Width, size.Height))
+            return 1;
+        double low = 0.3, high = 1;
+        for (var i = 0; i < 12; i++)
+        {
+            var s = (low + high) / 2;
+            if (FitsInSlice(n, angle, radius, size.Width * s, size.Height * s))
+                low = s;
+            else
+                high = s;
+        }
+        return low;
+    }
+
+    // ------------------------------------------------------------------ visuals
 
     private void Build()
     {
         _canvas.Children.Clear();
-        _slices.Clear();
+        _fills.Clear();
         _labels.Clear();
-        _groups.Clear();
+        Draw(_canvas, _ops, KeyColor, KeyStrong, null, _fills, _labels, _back);
 
-        var disc = OuterRadius + Rim;
-        var backdrop = new Ellipse
-        {
-            Width = 2 * disc,
-            Height = 2 * disc,
-            Fill = Theme.Backdrop,
-            Stroke = Theme.BackdropEdge,
-            StrokeThickness = 1,
-            Effect = Theme.Shadow(28),
-        };
-        Canvas.SetLeft(backdrop, Pad);
-        Canvas.SetTop(backdrop, Pad);
-        _canvas.Children.Add(backdrop);
-
-        var n = _ops.Count;
-        var step = n == 0 ? 360 : 360.0 / n;
-        // Labels sit a little outside the middle of the ring, where slices are wider,
-        // and shrink to the slice's width instead of spilling into the neighbours.
-        var labelRadius = InnerRadius + (OuterRadius - InnerRadius) * 0.54;
-        var labelWidth = n <= 2 ? 120 : Math.Clamp(2 * labelRadius * Math.Sin(step / 2 * Math.PI / 180) * 0.84, 48, 110);
-        for (var i = 0; i < n; i++)
-        {
-            var a0 = i * step - step / 2;
-            var path = new Path
-            {
-                Data = n == 1 ? Ring() : Sector(a0, a0 + step),
-                Fill = Theme.Slice,
-                Stroke = Theme.SliceEdge,
-                StrokeThickness = 1,
-            };
-            var label = SliceLabel(_ops[i]);
-            var fit = new Viewbox
-            {
-                Child = label,
-                Stretch = Stretch.Uniform,
-                StretchDirection = StretchDirection.DownOnly,
-                MaxWidth = labelWidth,
-                MaxHeight = (OuterRadius - InnerRadius) * 0.8,
-                IsHitTestVisible = false,
-            };
-            var mid = n == 1 ? new Point(Size / 2, Size / 2 - labelRadius) : Polar(labelRadius, i * step);
-            fit.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
-            Canvas.SetLeft(fit, mid.X - fit.DesiredSize.Width / 2);
-            Canvas.SetTop(fit, mid.Y - fit.DesiredSize.Height / 2);
-
-            // Slice and label move together when the slice pops out.
-            var group = new Canvas { Width = Size, Height = Size };
-            var transforms = new TransformGroup();
-            transforms.Children.Add(new ScaleTransform(1, 1, Size / 2, Size / 2));
-            transforms.Children.Add(new TranslateTransform());
-            group.RenderTransform = transforms;
-            group.Children.Add(path);
-            group.Children.Add(fit);
-            _slices.Add(path);
-            _labels.Add(label);
-            _groups.Add(group);
-            _canvas.Children.Add(group);
-        }
-
-        var hubSize = 2 * (InnerRadius - 6);
-        var hub = new Ellipse
-        {
-            Width = hubSize,
-            Height = hubSize,
-            Fill = Theme.Hub,
-            Stroke = Theme.PanelBorder,
-            StrokeThickness = 1,
-            Effect = Theme.Shadow(12),
-        };
-        Canvas.SetLeft(hub, Size / 2 - hubSize / 2);
-        Canvas.SetTop(hub, Size / 2 - hubSize / 2);
-        _canvas.Children.Add(hub);
-
-        BuildHub();
-        _hubContent.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
-        Canvas.SetLeft(_hubContent, Size / 2 - _hubContent.Width / 2);
-        Canvas.SetTop(_hubContent, Size / 2 - _hubContent.DesiredSize.Height / 2);
-        _canvas.Children.Add(_hubContent);
+        _hub = new Hub(Mode == WheelMode.Click ? SwitchTo : null, Mode == WheelMode.Click ? Flip : null);
+        _hub.Place(_canvas);
+        UpdateHub();
     }
 
-    /// <summary>
-    /// A still picture of a wheel with these slices, drawn exactly like the real one (used by the
-    /// wheel page in Settings). <paramref name="highlight"/> slices are painted with the accent.
-    /// </summary>
-    internal static FrameworkElement Preview(IReadOnlyList<Operation> ops, string title, string detail, ISet<string>? highlight = null)
+    /// <summary>Disc, slices and the dark hub circle; shared by the live wheel and the settings preview.</summary>
+    private static void Draw(Canvas canvas, IReadOnlyList<Operation> ops, Color key, Color strong, ISet<string>? highlight, List<SolidColorBrush>? fills, List<StackPanel>? labels, bool back = false)
     {
-        var canvas = new Canvas { Width = Size, Height = Size };
-        var disc = OuterRadius + Rim;
-        var backdrop = new Ellipse { Width = 2 * disc, Height = 2 * disc, Fill = Theme.Backdrop, Stroke = Theme.BackdropEdge, StrokeThickness = 1, Effect = Theme.Shadow(28) };
-        Canvas.SetLeft(backdrop, Pad);
-        Canvas.SetTop(backdrop, Pad);
-        canvas.Children.Add(backdrop);
+        var sliceColor = back ? Theme.BackSlice(key) : key;
+        var textColor = back ? Theme.BackSliceText(key) : Theme.OnKey.Color;
+        // The shadow sits in a cached parent, so its blur isn't redone each time a slice lights up; the disc
+        // itself is drawn again on top, sharp at any DPI.
+        var shadow = new Border
+        {
+            CacheMode = new BitmapCache(),
+            Child = new Ellipse { Width = 2 * Disc, Height = 2 * Disc, Fill = Theme.Backdrop, Effect = Theme.Shadow(30) },
+        };
+        var backdrop = new Ellipse { Width = 2 * Disc, Height = 2 * Disc, Fill = Theme.Backdrop };
+        foreach (var layer in new UIElement[] { shadow, backdrop })
+        {
+            Canvas.SetLeft(layer, Pad);
+            Canvas.SetTop(layer, Pad);
+            canvas.Children.Add(layer);
+        }
 
         var n = ops.Count;
         var step = n == 0 ? 360 : 360.0 / n;
-        var labelRadius = InnerRadius + (OuterRadius - InnerRadius) * 0.54;
-        var labelWidth = n <= 2 ? 120 : Math.Clamp(2 * labelRadius * Math.Sin(step / 2 * Math.PI / 180) * 0.84, 48, 110);
+        var radius = LabelRadius(n);
+        var width = LabelWidth(n, radius);
+        var sizes = LabelSizes(n);
+        var on = Theme.SliceOn(strong);
+        var onText = Theme.SliceOnText(strong);
         for (var i = 0; i < n; i++)
         {
-            var on = highlight?.Contains(ops[i].Id) == true;
+            var lit = highlight?.Contains(ops[i].Id) == true;
+            var fill = new SolidColorBrush(lit ? on : sliceColor);
             var a0 = i * step - step / 2;
             canvas.Children.Add(new Path
             {
                 Data = n == 1 ? Ring() : Sector(a0, a0 + step),
-                Fill = on ? Theme.AccentGradient : Theme.Slice,
-                Stroke = on ? Brushes.Transparent : Theme.SliceEdge,
-                StrokeThickness = 1,
+                Fill = n == 1 ? Brushes.Transparent : fill,
+                Stroke = fill,
+                StrokeThickness = n == 1 ? OuterRadius - InnerRadius : 2 * Corner,
+                StrokeLineJoin = PenLineJoin.Round,
             });
-            var label = SliceLabel(ops[i]);
-            foreach (var child in label.Children.OfType<TextBlock>().Where(_ => on))
-                child.Foreground = Theme.TextOnAccent;
+
+            // Try a few wrap widths and nudges along the slice; keep the layout that needs the least shrinking
+            // (ties go to the middle position and the wider wrap, so twins on both sides look alike).
+            var angle = n == 1 ? 0 : i * step;
+            var foreground = new SolidColorBrush(lit ? onText : textColor);
+            StackPanel label = null!;
+            var natural = default(System.Windows.Size);
+            var scale = -1.0;
+            var at = radius;
+            foreach (var wrap in n <= 2 ? new[] { width } : new[] { width, width * 0.8, width * 0.64 })
+            {
+                var candidate = SliceLabel(ops[i], wrap, sizes, foreground);
+                candidate.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+                foreach (var nudge in new[] { 0.0, 6, -6, 12, -12 })
+                {
+                    var s = FitScale(n, angle, radius + nudge, candidate.DesiredSize);
+                    if (s > scale + 0.01)
+                    {
+                        (label, natural, scale, at) = (candidate, candidate.DesiredSize, s, radius + nudge);
+                    }
+                }
+                if (scale >= 1)
+                    break;
+            }
             var fit = new Viewbox
             {
                 Child = label,
                 Stretch = Stretch.Uniform,
-                StretchDirection = StretchDirection.DownOnly,
-                MaxWidth = labelWidth,
-                MaxHeight = (OuterRadius - InnerRadius) * 0.8,
+                Width = natural.Width * scale,
+                Height = natural.Height * scale,
+                IsHitTestVisible = false,
             };
-            var mid = n == 1 ? new Point(Size / 2, Size / 2 - labelRadius) : Polar(labelRadius, i * step);
-            fit.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
-            Canvas.SetLeft(fit, mid.X - fit.DesiredSize.Width / 2);
-            Canvas.SetTop(fit, mid.Y - fit.DesiredSize.Height / 2);
+            var mid = Polar(at, angle);
+            Canvas.SetLeft(fit, mid.X - fit.Width / 2);
+            Canvas.SetTop(fit, mid.Y - fit.Height / 2);
             canvas.Children.Add(fit);
+            fills?.Add(fill);
+            labels?.Add(label);
         }
         if (n == 0)
-            canvas.Children.Add(new Path { Data = Ring(), Fill = Theme.Slice, Stroke = Theme.SliceEdge, StrokeThickness = 1, Opacity = 0.5 });
+        {
+            canvas.Children.Add(new Path
+            {
+                Data = Ring(),
+                Stroke = new SolidColorBrush(key) { Opacity = 0.35 },
+                StrokeThickness = OuterRadius - InnerRadius,
+            });
+        }
 
-        var hubSize = 2 * (InnerRadius - 6);
-        var hub = new Ellipse { Width = hubSize, Height = hubSize, Fill = Theme.Hub, Stroke = Theme.PanelBorder, StrokeThickness = 1, Effect = Theme.Shadow(12) };
-        Canvas.SetLeft(hub, Size / 2 - hubSize / 2);
-        Canvas.SetTop(hub, Size / 2 - hubSize / 2);
+        var hub = new Ellipse { Width = 2 * HubRadius, Height = 2 * HubRadius, Fill = Theme.Hub };
+        Canvas.SetLeft(hub, Size / 2 - HubRadius);
+        Canvas.SetTop(hub, Size / 2 - HubRadius);
         canvas.Children.Add(hub);
+    }
 
-        var text = new StackPanel { Width = InnerRadius * 1.75 };
-        var t = HubText(16, FontWeights.SemiBold);
-        t.Text = title;
-        t.Foreground = Theme.Text;
-        var d = HubText(11.5, FontWeights.Normal);
-        d.Text = detail;
-        d.Foreground = Theme.Muted;
-        text.Children.Add(t);
-        text.Children.Add(d);
-        text.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
-        Canvas.SetLeft(text, Size / 2 - text.Width / 2);
-        Canvas.SetTop(text, Size / 2 - text.DesiredSize.Height / 2);
-        canvas.Children.Add(text);
+    /// <summary>
+    /// A still picture of a wheel with these slices, drawn exactly like the real one (used by the
+    /// wheel page in Settings). <paramref name="highlight"/> slices are painted as if selected.
+    /// </summary>
+    internal static FrameworkElement Preview(IReadOnlyList<Operation> ops, Input.ModifierKey key, WheelKind wheel, string keyName, string title, string detail, ISet<string>? highlight = null, bool back = false, int pages = 1)
+    {
+        var canvas = new Canvas { Width = Size, Height = Size };
+        var strong = Theme.KeyStrongColor(key, wheel);
+        Draw(canvas, ops, Theme.KeyColor(key, wheel), strong, highlight, null, null, back);
+        var hub = new Hub(null);
+        hub.Place(canvas);
+        hub.Show(keyName, strong, title, detail, [], -1, back ? 2 : 1, pages);
         return new Viewbox { Child = canvas, Stretch = Stretch.Uniform };
     }
 
-    /// <summary>Slices grow out of the centre one after another.</summary>
-    private void AnimateSlicesIn()
+    private static StackPanel SliceLabel(Operation op, double width, (double Icon, double Text, double Format) sizes, SolidColorBrush foreground)
     {
-        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        for (var i = 0; i < _groups.Count; i++)
-        {
-            var delay = TimeSpan.FromMilliseconds(14 * i);
-            var duration = TimeSpan.FromMilliseconds(170);
-            var scale = (ScaleTransform)((TransformGroup)_groups[i].RenderTransform).Children[0];
-            _groups[i].BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, duration) { BeginTime = delay, EasingFunction = ease });
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.82, 1, duration) { BeginTime = delay, EasingFunction = ease });
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.82, 1, duration) { BeginTime = delay, EasingFunction = ease });
-        }
-    }
-
-    private static StackPanel SliceLabel(Operation op)
-    {
-        // Slices that first download a tool are shown a little faded.
-        var panel = new StackPanel { MaxWidth = 96, IsHitTestVisible = false, Opacity = op is Shell.NeedsToolOperation ? 0.6 : 1 };
         var isFormat = op.Wheel == WheelKind.Convert && op.Label.Length <= 6 && op.Label.ToUpperInvariant() == op.Label;
+        var weight = isFormat ? FontWeights.ExtraBold : FontWeights.Bold;
+        var (size, longest) = FitWords(op.Label, isFormat ? sizes.Format : sizes.Text, weight, width);
+        // Slices that first download a tool are shown a little faded. A word that can't fit even at the
+        // smallest size widens the label instead, and the whole label is scaled down to fit the slice.
+        var panel = new StackPanel { MaxWidth = Math.Max(width, longest + 2), IsHitTestVisible = false, Opacity = op is Shell.NeedsToolOperation ? 0.55 : 1 };
+        TextElement.SetForeground(panel, foreground);
         if (!isFormat)
         {
-            panel.Children.Add(new TextBlock
+            var icon = new TextBlock
             {
                 Text = op.Glyph,
                 FontFamily = Theme.Icons,
-                FontSize = 20,
-                Foreground = Theme.Text,
+                FontSize = sizes.Icon,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 5),
-            });
+            };
+            Typo.TrimToEm(icon, below: Math.Round(sizes.Icon * 0.3));
+            panel.Children.Add(icon);
         }
-        panel.Children.Add(new TextBlock
+        var text = new TextBlock
         {
             Text = op.Label,
             FontFamily = Theme.DisplayFont,
-            FontSize = isFormat ? 19 : 13,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = Theme.Text,
+            FontSize = size,
+            FontWeight = weight,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             HorizontalAlignment = HorizontalAlignment.Center,
-        });
-        if (!string.IsNullOrEmpty(op.Subtitle))
-        {
-            panel.Children.Add(new TextBlock
-            {
-                Text = op.Subtitle,
-                Tag = "subtitle",
-                FontSize = 10.5,
-                Foreground = Theme.Muted,
-                TextAlignment = TextAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 1, 0, 0),
-            });
-        }
+        };
+        Typo.TrimToCaps(text);
+        panel.Children.Add(text);
         return panel;
     }
 
-    private void BuildHub()
+    /// <summary>
+    /// The largest size (down to 11 px) at which the longest word still fits on one line, so labels wrap
+    /// between words and never split one in the middle; also returns that word's width at the size.
+    /// </summary>
+    private static (double Size, double Longest) FitWords(string label, double size, FontWeight weight, double width)
     {
-        _title.Foreground = Theme.Text;
-        _detail.Foreground = Theme.Muted;
-        _tabTrack.Background = Theme.Track;
-
-        if (_repeat)
-        {
-            _icon.Visibility = Visibility.Collapsed;
-            _iconGlyph.Text = "\uE8EE"; // RepeatAll
-            _iconGlyph.Foreground = Theme.Accent;
-            _iconGlyph.Visibility = Visibility.Visible;
-        }
-        else if (_items.Count > 0)
-        {
-            _icon.Source = Shell.FileIcons.Get(_items[0].Path);
-            _icon.Visibility = _icon.Source is null ? Visibility.Collapsed : Visibility.Visible;
-            _iconGlyph.Visibility = Visibility.Collapsed;
-        }
-        else
-        {
-            _icon.Visibility = Visibility.Collapsed;
-            _iconGlyph.Text = Glyphs.Extract;
-            _iconGlyph.Foreground = Theme.Accent;
-            _iconGlyph.Visibility = Visibility.Visible;
-        }
-
-        _tabs.Children.Clear();
-        foreach (var wheel in WheelOrder)
-        {
-            var key = _settings.KeyFor(wheel);
-            if (key == Input.ModifierKey.None && wheel != _wheel)
-                continue;
-            var active = wheel == _wheel;
-            var tab = new Border
-            {
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(7, 1, 7, 2),
-                Background = active ? Theme.AccentGradient : Brushes.Transparent,
-                Cursor = Mode == WheelMode.Click ? Cursors.Hand : null,
-                ToolTip = AppSettings.WheelName(wheel),
-                Child = new TextBlock
-                {
-                    Text = key == Input.ModifierKey.None ? AppSettings.WheelName(wheel) : AppSettings.KeyName(key),
-                    FontSize = 10.5,
-                    FontWeight = FontWeights.SemiBold,
-                    Foreground = active ? Theme.TextOnAccent : Theme.Muted,
-                },
-            };
-            if (Mode == WheelMode.Click)
-            {
-                var target = wheel;
-                tab.MouseLeftButtonUp += (_, e) =>
-                {
-                    e.Handled = true;
-                    SwitchTo(target);
-                };
-            }
-            _tabs.Children.Add(tab);
-        }
-        UpdateHubText();
+        var typeface = new Typeface(Theme.DisplayFont, FontStyles.Normal, weight, FontStretches.Normal);
+        var longest = label.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(word => new FormattedText(word, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, typeface, 1, Brushes.Black, 1).WidthIncludingTrailingWhitespace)
+            .DefaultIfEmpty(0)
+            .Max();
+        if (longest <= 0)
+            return (size, 0);
+        var fitted = Math.Max(Math.Min(11, size), Math.Min(size, (width - 2) / longest));
+        return (fitted, longest * fitted);
     }
 
     private void SetHighlight(int index)
     {
         if (index == _highlight)
             return;
-        if (_highlight >= 0 && _highlight < _slices.Count)
+        if (_highlight >= 0 && _highlight < _fills.Count)
             Paint(_highlight, false);
         _highlight = index;
-        if (_highlight >= 0 && _highlight < _slices.Count)
+        if (_highlight >= 0 && _highlight < _fills.Count)
             Paint(_highlight, true);
-        UpdateHubText();
+        UpdateHub();
     }
 
+    /// <summary>Swaps the slice to ink/paper and back, instantly: colour only, no movement, glow or fade.</summary>
     private void Paint(int index, bool on)
     {
-        var slice = _slices[index];
-        slice.Fill = on ? Theme.AccentGradient : Theme.Slice;
-        slice.Stroke = on ? Brushes.Transparent : Theme.SliceEdge;
-        slice.Effect = on ? Theme.Glow() : null;
-        foreach (var child in _labels[index].Children.OfType<TextBlock>())
-        {
-            var subtitle = Equals(child.Tag, "subtitle");
-            child.Foreground = on ? Theme.TextOnAccent : subtitle ? Theme.Muted : Theme.Text;
-            child.Opacity = on && subtitle ? 0.85 : 1;
-        }
-
-        // Pop the slice outwards along its middle angle.
-        var n = _ops.Count;
-        var angle = n <= 1 ? 0 : index * 360.0 / n * Math.PI / 180;
-        var distance = on && n > 1 ? PopOut : 0;
-        var move = (TranslateTransform)((TransformGroup)_groups[index].RenderTransform).Children[1];
-        var duration = TimeSpan.FromMilliseconds(130);
-        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        if (IsVisible)
-        {
-            move.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(distance * Math.Sin(angle), duration) { EasingFunction = ease });
-            move.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(-distance * Math.Cos(angle), duration) { EasingFunction = ease });
-        }
-        else
-        {
-            move.X = distance * Math.Sin(angle);
-            move.Y = -distance * Math.Cos(angle);
-        }
+        _fills[index].Color = on ? Theme.SliceOn(KeyStrong) : _back ? Theme.BackSlice(KeyColor) : KeyColor;
+        ((SolidColorBrush)TextElement.GetForeground(_labels[index])).Color = on ? Theme.SliceOnText(KeyStrong) : _back ? Theme.BackSliceText(KeyColor) : Theme.OnKey.Color;
     }
 
-    private void UpdateHubText()
+    private void UpdateHub()
+    {
+        var key = _settings.KeyFor(_wheel);
+        var keyName = key == Input.ModifierKey.None ? AppSettings.WheelName(_wheel) : AppSettings.KeyName(key);
+        var wheels = WheelOrder
+            .Where(w => w == _wheel || _settings.KeyFor(w) != Input.ModifierKey.None)
+            .Select(w => (w, Theme.KeyStrongColor(_settings.KeyFor(w), w)))
+            .ToList();
+        var current = wheels.FindIndex(w => w.w == _wheel);
+        var (title, detail) = HubText();
+        var pages = _otherSide > 0 ? 2 : 1;
+        _hub.Show(keyName, KeyStrong, title, detail, wheels, current, _back ? 2 : 1, pages, Teach);
+    }
+
+    /// <summary>Until the person has turned a wheel once, a wheel with two pages says how, in the key colour.</summary>
+    private bool Teach => _otherSide > 0 && !_settings.FlipLearned && !_repeat;
+
+    private (string Title, string Detail) HubText()
     {
         if (_repeat)
         {
             var last = _ops.Count > 0 ? _ops[0] : null;
-            _title.Text = _highlight >= 0 && last is not null ? last.Label : T("Repeat", "Повторить");
-            _detail.Text = last is null
+            var title = _highlight >= 0 && last is not null ? last.Label : T("Repeat", "Повторить");
+            var detail = last is null
                 ? T("Last action doesn't fit", "Последнее действие не подходит")
                 : _highlight >= 0 ? T("last action", "последнее действие") : last.Label;
-            return;
+            return (title, detail);
         }
         if (_highlight >= 0 && _highlight < _ops.Count)
         {
             var op = _ops[_highlight];
-            _title.Text = op.Label;
-            _detail.Text = op.Subtitle ?? DescribeItems();
-            return;
+            return (op.Label, op.Subtitle ?? DescribeItems());
         }
-        _title.Text = AppSettings.WheelName(_wheel);
+        var name = AppSettings.WheelName(_wheel);
+        if (Teach)
+            return (name, T("Scroll or Tab: more", "Колёсико или Tab"));
         if (_items.Count == 0)
-            _detail.Text = T("Drag a file here", "Перетащите файл сюда");
-        else if (_ops.Count == 0)
-            _detail.Text = T("Nothing for this selection", "Нет действий для выбранных файлов");
-        else
-            _detail.Text = DescribeItems();
+            return (name, T("Drag a file here", "Перетащите файл сюда"));
+        if (_ops.Count == 0)
+            return (name, T("Nothing for this selection", "Нет действий для выбранных файлов"));
+        return (name, DescribeItems());
     }
 
     private string DescribeItems() => _items.Count == 1 ? _items[0].Name : Items(_items.Count);
+
+    /// <summary>
+    /// The middle of the wheel: the key as a coloured keycap, what will happen, which file, and a dot per
+    /// wheel (the open one stretched into a pill). In click mode the dots switch wheels.
+    /// </summary>
+    private sealed class Hub
+    {
+        private const double ContentWidth = 2 * HubRadius - 22;
+        private readonly StackPanel _panel = new() { Width = ContentWidth };
+        private readonly Border _keycap = new() { CornerRadius = new CornerRadius(9), HorizontalAlignment = HorizontalAlignment.Center, Padding = new Thickness(11, 8, 11, 8) };
+        private readonly TextBlock _key = new() { FontSize = 17, FontWeight = FontWeights.ExtraBold };
+        private readonly TextBlock _title = Line(15, FontWeights.Bold, 0.95);
+        private readonly TextBlock _detail = Line(11.5, FontWeights.Medium, 0.55);
+        private readonly StackPanel _dots = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 12, 0, 0) };
+        private readonly Action<WheelKind>? _switch;
+        // "Pages": a mouse, one bar per page with the current one filled, and "1 / 2".
+        private readonly Border _flipHint = new() { CornerRadius = new CornerRadius(9), HorizontalAlignment = HorizontalAlignment.Center, Padding = new Thickness(7, 4, 9, 4), Margin = new Thickness(0, 10, 0, 0) };
+        private readonly TextBlock _flipText = new() { FontSize = 11.5, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _flipIcon = new() { FontSize = 15, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
+        private readonly StackPanel _pager = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+        private Canvas? _canvas;
+
+        public Hub(Action<WheelKind>? switchTo, Action? flip = null)
+        {
+            _switch = switchTo;
+            _flipIcon.FontFamily = Theme.Icons;
+            _flipIcon.Text = Sweetch.Core.Glyphs.Mouse;
+            var hint = new StackPanel { Orientation = Orientation.Horizontal };
+            hint.Children.Add(_flipIcon);
+            hint.Children.Add(_pager);
+            hint.Children.Add(_flipText);
+            _flipHint.Child = hint;
+            if (flip is not null)
+            {
+                _flipHint.Cursor = Cursors.Hand;
+                _flipHint.MouseLeftButtonUp += (_, e) =>
+                {
+                    e.Handled = true;
+                    flip();
+                };
+            }
+            _key.FontFamily = Theme.DisplayFont;
+            Typo.TrimToCaps(_key);
+            _keycap.Child = _key;
+            _title.Margin = new Thickness(0, 12, 0, 0);
+            _detail.Margin = new Thickness(0, 3, 0, 0);
+            _panel.Children.Add(_keycap);
+            _panel.Children.Add(_title);
+            _panel.Children.Add(_detail);
+            _panel.Children.Add(_dots);
+            _panel.Children.Add(_flipHint);
+        }
+
+        // The hub is dark (or soft grey in light low contrast); its text follows.
+        private static TextBlock Line(double size, FontWeight weight, double opacity) => new()
+        {
+            FontSize = size,
+            FontWeight = weight,
+            Foreground = Theme.HubText,
+            Opacity = opacity,
+            TextAlignment = TextAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            MaxWidth = ContentWidth,
+        };
+
+        /// <param name="page">Which page is up, of <paramref name="pages"/>; with one page there is no pager.</param>
+        /// <param name="teach">First time: the pager is drawn in the key colour so it can't be missed.</param>
+        public void Show(string keyName, Color key, string title, string detail, IReadOnlyList<(WheelKind Wheel, Color Color)> wheels, int current, int page = 1, int pages = 1, bool teach = false)
+        {
+            // A tab of the hub's own colour hanging off it; in the key colour on page 2 and while teaching.
+            var lit = teach || page > 1;
+            var ink = lit ? Theme.OnKey : Theme.HubText;
+            _flipHint.Visibility = pages > 1 ? Visibility.Visible : Visibility.Collapsed;
+            _flipHint.Background = lit ? new SolidColorBrush(key) : Theme.Hub;
+            _flipText.Text = $"{page} / {pages}";
+            _flipText.Foreground = _flipIcon.Foreground = ink;
+            _pager.Children.Clear();
+            for (var i = 1; i <= pages; i++)
+            {
+                _pager.Children.Add(new Border
+                {
+                    Width = 4,
+                    Height = 6,
+                    CornerRadius = new CornerRadius(2),
+                    Background = ink,
+                    Opacity = i == page ? 1 : 0.35,
+                    Margin = new Thickness(0, i == 1 ? 0 : 2, 0, 0),
+                });
+            }
+            _key.Text = keyName.ToUpperInvariant();
+            _keycap.Background = new SolidColorBrush(key);
+            _key.Foreground = Theme.OnKey;
+            _title.Text = title;
+            _detail.Text = detail;
+            _dots.Visibility = wheels.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+            _dots.Children.Clear();
+            for (var i = 0; i < wheels.Count; i++)
+            {
+                var (wheel, color) = wheels[i];
+                var dot = new Border
+                {
+                    Height = 8,
+                    Width = i == current ? 24 : 8,
+                    CornerRadius = new CornerRadius(4),
+                    Background = new SolidColorBrush(color),
+                    Opacity = i == current ? 1 : 0.4,
+                    Margin = new Thickness(i == 0 ? 0 : 5, 0, 0, 0),
+                    Cursor = _switch is null ? null : Cursors.Hand,
+                    ToolTip = _switch is null ? null : AppSettings.WheelName(wheel),
+                };
+                if (_switch is not null && i != current)
+                {
+                    var target = wheel;
+                    dot.MouseLeftButtonUp += (_, e) =>
+                    {
+                        e.Handled = true;
+                        _switch(target);
+                    };
+                }
+                _dots.Children.Add(dot);
+            }
+            if (_canvas is not null)
+                Center();
+        }
+
+        public void Place(Canvas canvas)
+        {
+            _canvas = canvas;
+            canvas.Children.Add(_panel);
+            Center();
+        }
+
+        private void Center()
+        {
+            _panel.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+            Canvas.SetLeft(_panel, Size / 2 - ContentWidth / 2);
+            Canvas.SetTop(_panel, Size / 2 - _panel.DesiredSize.Height / 2);
+        }
+    }
 }

@@ -15,7 +15,7 @@
     <ApplicationIcon>Assets\Sweetch.ico</ApplicationIcon>
     <StartupObject>Sweetch.App.Program</StartupObject>
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
-    <Version>1.0.0</Version>
+    <Version>2.1.2</Version>
     <SatelliteResourceLanguages>en;ru</SatelliteResourceLanguages>
     <!--
       Smaller download: trim only libraries marked as trim-safe (the .NET runtime, the Windows SDK projection…);
@@ -49,6 +49,8 @@
   <ItemGroup>
     <Resource Include="Assets\Sweetch.ico" />
     <Resource Include="Assets\Sweetch.png" />
+    <!-- Onest (OFL) and the icon subset of Material Symbols (Apache 2.0); rebuilt by scripts/build-fonts.py. -->
+    <Resource Include="Assets\Fonts\*.ttf" />
   </ItemGroup>
 
   <ItemGroup>

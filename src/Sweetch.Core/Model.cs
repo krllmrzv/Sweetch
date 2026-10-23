@@ -19,7 +19,8 @@ public enum ExternalTool
 /// <summary>A file or folder the user dropped onto the wheel.</summary>
 public sealed record FileItem(string Path)
 {
-    public bool IsDirectory => Directory.Exists(Path);
+    /// <summary>Checked once: every operation on the wheel asks about every item.</summary>
+    public bool IsDirectory { get; } = Directory.Exists(Path);
 
     public string Name => System.IO.Path.GetFileName(Path.TrimEnd('\\', '/'));
 
@@ -113,6 +114,9 @@ public abstract class Operation
     public string Glyph { get; }
 
     public IReadOnlyList<ExternalTool> Requires { get; init; } = [];
+
+    /// <summary>Seldom needed: shown on the wheel's other side (scroll to flip), so the front stays roomy.</summary>
+    public bool Rare { get; set; }
 
     public IReadOnlyList<ParameterSpec> Parameters { get; init; } = [];
 

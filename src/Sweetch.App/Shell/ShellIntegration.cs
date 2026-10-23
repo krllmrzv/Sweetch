@@ -62,13 +62,15 @@ internal static class ShellIntegration
     {
         try
         {
+            // Only when the path changed: nothing is written on an ordinary start.
             if (Registry.CurrentUser.OpenSubKey(MenuRoots[0]) is { } existing)
             {
                 existing.Dispose();
-                SetContextMenu(true);
+                if (!IsContextMenuEnabled)
+                    SetContextMenu(true);
             }
             using var run = Registry.CurrentUser.OpenSubKey(RunKey);
-            if (run?.GetValue(ValueName) is not null)
+            if (run?.GetValue(ValueName) is not null && !IsAutostartEnabled)
                 SetAutostart(true);
         }
         catch (UnauthorizedAccessException)

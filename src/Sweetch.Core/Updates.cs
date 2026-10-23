@@ -3,8 +3,15 @@ using System.Text.Json;
 namespace Sweetch.Core;
 
 /// <summary>The latest published release, as reported by the GitHub releases API.</summary>
-public sealed record UpdateInfo(Version Version, string Tag, string PageUrl, string? InstallerUrl, string? InstallerSha256)
+/// <param name="Installer">The setup .exe, for copies installed with it.</param>
+/// <param name="Zip">The portable archive, for copies unpacked from it.</param>
+public sealed record UpdateInfo(Version Version, string Tag, string PageUrl, UpdateInfo.Asset? Installer, UpdateInfo.Asset? Zip)
 {
+    /// <param name="Sha256">From GitHub's own "digest" of the upload, lower case; null on older releases.</param>
+    public sealed record Asset(string Url, string? Sha256);
+
+    public string? InstallerUrl => Installer?.Url;
+    public string? InstallerSha256 => Installer?.Sha256;
 
     /// <summary>Parses a "releases/latest" response; null when it isn't a usable release.</summary>
     public static UpdateInfo? Parse(string json)
@@ -20,22 +27,24 @@ public sealed record UpdateInfo(Version Version, string Tag, string PageUrl, str
             return null;
         var page = root.TryGetProperty("html_url", out var url) ? url.GetString() ?? "" : "";
 
-        string? installer = null;
-        string? sha = null;
+        Asset? installer = null, zip = null;
         if (root.TryGetProperty("assets", out var assets))
         {
             foreach (var asset in assets.EnumerateArray())
             {
+                // "Sweetch-2.1-Setup-win-x64.exe" and "Sweetch-2.1-win-x64.zip"; the .sha256 files beside them are skipped.
                 var name = asset.GetProperty("name").GetString() ?? "";
-                if (!name.StartsWith("Sweetch-Setup-", StringComparison.OrdinalIgnoreCase) || !name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                if (!name.StartsWith("Sweetch", StringComparison.OrdinalIgnoreCase) || asset.GetProperty("browser_download_url").GetString() is not { } link)
                     continue;
-                installer = asset.GetProperty("browser_download_url").GetString();
-                if (asset.TryGetProperty("digest", out var digest) && digest.GetString() is { } d && d.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
-                    sha = d["sha256:".Length..].ToLowerInvariant();
-                break;
+                var sha = asset.TryGetProperty("digest", out var digest) && digest.GetString() is { } d && d.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+                    ? d["sha256:".Length..].ToLowerInvariant() : null;
+                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && name.Contains("Setup", StringComparison.OrdinalIgnoreCase))
+                    installer ??= new Asset(link, sha);
+                else if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    zip ??= new Asset(link, sha);
             }
         }
-        return new UpdateInfo(version, tag, page, installer, sha);
+        return new UpdateInfo(version, tag, page, installer, zip);
     }
 
     public bool IsNewerThan(Version current) => Version > Normalize(current);

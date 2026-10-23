@@ -40,12 +40,12 @@ internal sealed class ShelfWindow : Window
         FontFamily = Theme.UiFont;
 
         _header = new TextBlock { Foreground = Theme.Text, FontFamily = Theme.DisplayFont, FontWeight = FontWeights.SemiBold, FontSize = 14, VerticalAlignment = VerticalAlignment.Center };
-        var close = IconButton("\uE711", T("Close", "Закрыть"));
+        var close = IconButton(Glyphs.Close, T("Close", "Закрыть"));
         close.Click += (_, _) => Close();
         var header = new DockPanel { Margin = new Thickness(14, 10, 8, 8), Background = Brushes.Transparent, Cursor = Cursors.SizeAll };
         DockPanel.SetDock(close, Dock.Right);
         header.Children.Add(close);
-        header.Children.Add(new TextBlock { Text = Glyphs.Pin, FontFamily = Theme.Icons, Foreground = Theme.Accent, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center });
+        header.Children.Add(new TextBlock { Text = Glyphs.Pin, FontFamily = Theme.Icons, Foreground = Theme.Ink, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center });
         header.Children.Add(_header);
         header.MouseLeftButtonDown += (_, e) =>
         {
@@ -198,7 +198,7 @@ internal sealed class ShelfWindow : Window
         var hover = new Trigger { Property = IsMouseOverProperty, Value = true };
         hover.Setters.Add(new Setter(Border.BackgroundProperty, Theme.Hover, "Row"));
         var selected = new Trigger { Property = ListBoxItem.IsSelectedProperty, Value = true };
-        selected.Setters.Add(new Setter(Border.BackgroundProperty, Theme.AccentSoft, "Row"));
+        selected.Setters.Add(new Setter(Border.BackgroundProperty, Theme.Selected, "Row"));
         template.Triggers.Add(hover);
         template.Triggers.Add(selected);
         var style = new Style(typeof(ListBoxItem));

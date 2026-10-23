@@ -6,9 +6,11 @@ namespace Sweetch.Core;
 /// <summary>Finds ffmpeg, pandoc and LibreOffice next to the app, in PATH or in their default install folders.</summary>
 public sealed class ToolLocator
 {
-    private readonly Dictionary<ExternalTool, string?> _cache = new();
+    // Shared with the views made by Assuming, so "what if" checks don't search PATH again.
+    private readonly Dictionary<ExternalTool, string?> _cache;
     private readonly string _appDir;
     private readonly HashSet<ExternalTool> _assumed = [];
+    private bool _onlyAssumed;
 
     /// <summary>Where the Windows app downloads FFmpeg and Pandoc when they are needed.</summary>
     public static string DownloadFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Sweetch", "tools");
@@ -16,14 +18,27 @@ public sealed class ToolLocator
     /// <summary>A view that pretends <paramref name="tools"/> are installed: "would this work after downloading X?"</summary>
     public ToolLocator Assuming(IEnumerable<ExternalTool> tools)
     {
-        var view = new ToolLocator(_appDir);
+        var view = new ToolLocator(_appDir, _cache);
         view._assumed.UnionWith(tools);
         return view;
     }
 
-    public ToolLocator(string? appDir = null)
+    /// <summary>A view where exactly <paramref name="tools"/> exist, installed or not: "what does LibreOffice add?"</summary>
+    public static ToolLocator Pretending(IEnumerable<ExternalTool> tools)
     {
-        _appDir = appDir ?? AppContext.BaseDirectory;
+        var view = new ToolLocator(AppContext.BaseDirectory, []) { _onlyAssumed = true };
+        view._assumed.UnionWith(tools);
+        return view;
+    }
+
+    public ToolLocator(string? appDir = null) : this(appDir ?? AppContext.BaseDirectory, new Dictionary<ExternalTool, string?>())
+    {
+    }
+
+    private ToolLocator(string appDir, Dictionary<ExternalTool, string?> cache)
+    {
+        _appDir = appDir;
+        _cache = cache;
     }
 
     private static bool IsWindows => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -61,6 +76,8 @@ public sealed class ToolLocator
 
     public string? Find(ExternalTool tool)
     {
+        if (_onlyAssumed)
+            return _assumed.Contains(tool) ? "(assumed)" : null;
         lock (_cache)
         {
             if (!_cache.TryGetValue(tool, out var path))

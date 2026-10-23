@@ -53,10 +53,24 @@ internal sealed class GlobalInput : IDisposable
 
     public event Action? EscapePressed;
 
+    /// <summary>The mouse wheel turned over an open wheel (see <see cref="WheelAt"/>); the scroll is kept from the window below.</summary>
+    public event Action<int>? Scrolled;
+
+    /// <summary>Tab was pressed while a drag wheel is open (see <see cref="TabFlips"/>); the key is kept from the window below.</summary>
+    public event Action? TabPressed;
+
+    /// <summary>Called on the hook thread: should Tab turn the wheel's page right now?</summary>
+    public Func<bool>? TabFlips { get; set; }
+
+    /// <summary>Called on the hook thread: is a Sweetch wheel open at this screen point?</summary>
+    public Func<Win32.POINT, bool>? WheelAt { get; set; }
+
     /// <summary>Called on the hook thread to decide whether Alt taps should be neutralised.</summary>
     public Func<ModifierKey, bool>? IsWheelKey { get; set; }
 
     public bool IsDragging => _dragging;
+
+    private bool _tabDown;
 
     public Win32.POINT Cursor => new() { X = Volatile.Read(ref _cursorX), Y = Volatile.Read(ref _cursorY) };
 
@@ -113,12 +127,34 @@ internal sealed class GlobalInput : IDisposable
         {
             try
             {
-                var data = Marshal.PtrToStructure<Win32.KBDLLHOOKSTRUCT>(lParam);
+                // KBDLLHOOKSTRUCT: vkCode at 0, flags at 8. Read in place: this runs for every key in the system.
+                var vk = (uint)Marshal.ReadInt32(lParam);
+                var flags = (uint)Marshal.ReadInt32(lParam, 8);
                 var message = (int)wParam;
-                var injected = (data.flags & Win32.LLKHF_INJECTED) != 0;
+                var injected = (flags & Win32.LLKHF_INJECTED) != 0;
+                if (vk == 0x09 && !injected)
+                {
+                    var down = message is Win32.WM_KEYDOWN or Win32.WM_SYSKEYDOWN;
+                    if (down && (_tabDown || (_dragging && TabFlips?.Invoke() == true)))
+                    {
+                        if (!_tabDown)
+                            _dispatcher.BeginInvoke(() => TabPressed?.Invoke());
+                        _tabDown = true;
+                        // Shift+Tab is a combination: releasing Shift afterwards must not count as a tap.
+                        _pendingTap = ModifierKey.None;
+                        return 1;
+                    }
+                    if (!down && _tabDown)
+                    {
+                        // The release of a press we kept, even if the drop already ended the drag: swallowed too,
+                        // or the window below would get half a key press, and the next drag's Tab would be lost.
+                        _tabDown = false;
+                        return 1;
+                    }
+                }
                 // Ignore synthetic keys (ours and other tools'); a tap must come from the keyboard.
                 if (!injected)
-                    OnKey(data.vkCode, message is Win32.WM_KEYDOWN or Win32.WM_SYSKEYDOWN);
+                    OnKey(vk, message is Win32.WM_KEYDOWN or Win32.WM_SYSKEYDOWN);
             }
             catch
             {
@@ -170,27 +206,33 @@ internal sealed class GlobalInput : IDisposable
         {
             try
             {
-                var data = Marshal.PtrToStructure<Win32.MSLLHOOKSTRUCT>(lParam);
-                Volatile.Write(ref _cursorX, data.pt.X);
-                Volatile.Write(ref _cursorY, data.pt.Y);
+                // MSLLHOOKSTRUCT starts with the point. Read in place: this runs for every mouse move in the system.
+                var pt = new Win32.POINT { X = Marshal.ReadInt32(lParam), Y = Marshal.ReadInt32(lParam, 4) };
+                Volatile.Write(ref _cursorX, pt.X);
+                Volatile.Write(ref _cursorY, pt.Y);
                 switch ((int)wParam)
                 {
                     case Win32.WM_LBUTTONDOWN:
                         _leftDown = true;
                         _dragging = false;
-                        _downAt = data.pt;
-                        Raise(data.pt);
+                        _downAt = pt;
+                        Raise(pt);
                         break;
                     case Win32.WM_RBUTTONDOWN:
                     case Win32.WM_MBUTTONDOWN:
-                        Raise(data.pt);
+                        Raise(pt);
                         break;
                     case Win32.WM_MOUSEMOVE when _leftDown && !_dragging:
-                        var dx = Math.Abs(data.pt.X - _downAt.X);
-                        var dy = Math.Abs(data.pt.Y - _downAt.Y);
+                        var dx = Math.Abs(pt.X - _downAt.X);
+                        var dy = Math.Abs(pt.Y - _downAt.Y);
                         if (dx > Win32.GetSystemMetrics(Win32.SM_CXDRAG) * 2 || dy > Win32.GetSystemMetrics(Win32.SM_CYDRAG) * 2)
                             _dragging = true;
                         break;
+                    case Win32.WM_MOUSEWHEEL when WheelAt?.Invoke(pt) == true:
+                        // MSLLHOOKSTRUCT.mouseData: the wheel delta in the high word.
+                        var delta = (short)(Marshal.ReadInt32(lParam, 8) >> 16);
+                        _dispatcher.BeginInvoke(() => Scrolled?.Invoke(delta));
+                        return 1;
                     case Win32.WM_LBUTTONUP:
                         _leftDown = false;
                         _dragging = false;

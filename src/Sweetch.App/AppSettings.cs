@@ -34,10 +34,16 @@ public sealed class AppSettings
     public Language? Language { get; set; } = Core.Language.Russian;
     public AppAppearance Appearance { get; set; } = AppAppearance.System;
 
+    /// <summary>Calm colours: tinted slices and tiles instead of bright ones.</summary>
+    public bool LowContrast { get; set; }
+
     /// <summary>Empty = save results next to the original file.</summary>
     public string? OutputDirectory { get; set; }
 
     public bool RevealResult { get; set; }
+
+    /// <summary>The user closed the "install helper programs" strip in Settings.</summary>
+    public bool HideMissingTools { get; set; }
     public bool Paused { get; set; }
     public bool FirstRunDone { get; set; }
     public string? LastCopyFolder { get; set; }
@@ -51,12 +57,31 @@ public sealed class AppSettings
     /// <summary>Operation ids that always come first on their wheel, in this order.</summary>
     public List<string> FavoriteOperations { get; set; } = [];
 
+    /// <summary>Slices the user moved to the other side of the wheel than the one they come on.</summary>
+    public List<string> FlippedOperations { get; set; } = [];
+
+    /// <summary>The person has turned a wheel to its other page once; until then the wheel shows how.</summary>
+    public bool FlipLearned { get; set; }
+
+    /// <summary>On the wheel's other side (scroll to flip): rare ones, unless the user swapped them.</summary>
+    public bool IsBackSide(Operation op) => op.Rare != FlippedOperations.Contains(op.Id);
+
     /// <summary>The last operation run, for "repeat last" (with the values it asked for, e.g. trim times).</summary>
     public string? LastOperationId { get; set; }
 
     public Dictionary<string, string>? LastParameters { get; set; }
 
-    public bool CheckForUpdates { get; set; } = false;
+    /// <summary>
+    /// Programs (process names) a drag must start in to open a wheel: file managers. Elsewhere a drag is a layer, a
+    /// window or a selection, and the program's own cursors would pass for a file drag.
+    /// </summary>
+    public List<string> DragApps { get; set; } = [.. DefaultDragApps];
+
+    public static readonly string[] DefaultDragApps =
+        ["explorer", "totalcmd", "totalcmd64", "doublecmd", "Files", "XYplorer", "dopus", "OneCommander", "FreeCommander", "FarManager", "Far"];
+
+    /// <summary>Look for a new release on GitHub. A new name, so settings saved while updates were off don't keep them off.</summary>
+    public bool AutoUpdateCheck { get; set; } = true;
 
     /// <summary>Slices the user put together (e.g. "JPG 70 %"); they appear on the wheels like the built-in ones.</summary>
     public List<Preset> Presets { get; set; } = [];

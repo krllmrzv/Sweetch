@@ -114,7 +114,7 @@ internal sealed class WatchFolderDialog : Window
 
         _error.Margin = new Thickness(0, 14, 0, 0);
         root.Children.Add(_error);
-        var save = Button(T("Save", "Сохранить"), Save, primary: true, glyph: "");
+        var save = Button(T("Save", "Сохранить"), Save, primary: true, glyph: Glyphs.Save);
         var cancel = Button(T("Cancel", "Отмена"), () => DialogResult = false);
         cancel.Margin = new Thickness(8, 0, 0, 0);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
@@ -134,16 +134,15 @@ internal sealed class WatchFolderDialog : Window
 
     private Border Chip(string name, bool active, int index)
     {
-        var chip = new Border
+        var chip = new PillBorder
         {
-            CornerRadius = new CornerRadius(999),
             Padding = new Thickness(14, 6, 14, 7),
             Margin = new Thickness(0, 0, 8, 8),
-            Background = active ? Theme.AccentGradient : Theme.Card,
+            Background = active ? Theme.Ink : Theme.Card,
             BorderBrush = active ? Brushes.Transparent : Theme.PanelBorder,
             BorderThickness = new Thickness(1),
             Cursor = Cursors.Hand,
-            Child = Text(name, 13, active ? FontWeights.SemiBold : FontWeights.Normal, active ? Theme.TextOnAccent : Theme.Text, wrap: false),
+            Child = Text(name, 13, active ? FontWeights.SemiBold : FontWeights.Normal, active ? Theme.OnInk : Theme.Text, wrap: false),
         };
         chip.MouseLeftButtonUp += (_, _) =>
         {
@@ -158,10 +157,10 @@ internal sealed class WatchFolderDialog : Window
         var selected = op.Id == _folder.OperationId;
         var mark = new TextBlock
         {
-            Text = selected ? "" : "",
+            Text = selected ? Glyphs.Check : "",
             FontFamily = Theme.Icons,
             FontSize = 14,
-            Foreground = Theme.Accent,
+            Foreground = Theme.Ink,
             Width = 22,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -177,7 +176,7 @@ internal sealed class WatchFolderDialog : Window
         {
             BorderBrush = Theme.PanelBorder,
             BorderThickness = new Thickness(0, separator ? 1 : 0, 0, 0),
-            Background = selected ? Theme.AccentSoft : Brushes.Transparent,
+            Background = selected ? Theme.Selected : Brushes.Transparent,
             Cursor = Cursors.Hand,
             Child = row,
         };

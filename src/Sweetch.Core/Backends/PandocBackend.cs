@@ -13,6 +13,11 @@ public static class PandocBackend
         "odt" => "odt",
         "epub" => "epub",
         "rtf" => "rtf",
+        "tex" => "latex",
+        "adoc" => "asciidoc",
+        "typ" => "typst",
+        "wiki" => "mediawiki",
+        "rst" or "org" or "ipynb" or "fb2" or "textile" or "docbook" or "opml" or "djot" => format,
         _ => throw new ConversionException(T($"Pandoc cannot read {format}.", $"Pandoc не поддерживает чтение {format}.")),
     };
 
@@ -25,6 +30,11 @@ public static class PandocBackend
         "odt" => "odt",
         "epub" => "epub3",
         "rtf" => "rtf",
+        "tex" => "latex",
+        "rst" => "rst",
+        "typ" => "typst",
+        "adoc" => "asciidoc",
+        "pptx" => "pptx",
         _ => throw new ConversionException(T($"Pandoc cannot write {format}.", $"Pandoc не поддерживает запись {format}.")),
     };
 
@@ -46,7 +56,7 @@ public static class PandocBackend
             // ("hPutChar: invalid argument"). Warnings are not shown to users anyway.
             "--quiet",
         };
-        if (format is "html" or "rtf" or "epub" || inputFormat == "html")
+        if (format is "html" or "rtf" or "epub" or "tex" || inputFormat == "html")
             args.Add("--standalone");
         if (format == "html")
             args.Add("--embed-resources");
@@ -55,7 +65,7 @@ public static class PandocBackend
         if (format is "txt")
             args.Add("--wrap=none");
         var mediaDir = Path.GetDirectoryName(output)!;
-        if (format == "md" && inputFormat is "docx" or "odt" or "epub")
+        if (format == "md" && inputFormat is "docx" or "odt" or "epub" or "fb2" or "ipynb")
         {
             // Pictures from the document land next to the Markdown file.
             args.Add("--extract-media=" + Path.Combine(mediaDir, Formats.BaseNameOf(input) + " - media"));

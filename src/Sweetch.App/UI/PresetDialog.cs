@@ -118,7 +118,7 @@ internal sealed class PresetDialog : Window
         summary.Margin = new Thickness(0, 22, 0, 0);
         root.Children.Add(summary);
 
-        var save = Button(T("Save", "Сохранить"), () => DialogResult = true, primary: true, glyph: "");
+        var save = Button(T("Save", "Сохранить"), () => DialogResult = true, primary: true, glyph: Glyphs.Save);
         var cancel = Button(T("Cancel", "Отмена"), () => DialogResult = false);
         cancel.Margin = new Thickness(8, 0, 0, 0);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 20, 0, 0) };

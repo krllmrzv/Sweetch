@@ -13,6 +13,7 @@ public static class SpreadsheetBackend
     {
         // ExcelDataReader needs legacy code pages for old XLS files.
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        LoadOptions.DefaultGraphicEngine = new FixedFontMetrics();
     }
 
     public sealed record Sheet(string Name, List<string[]> Rows);
@@ -206,7 +207,14 @@ public static class SpreadsheetBackend
             if (sheet.Rows.Count > 0)
             {
                 ws.Row(1).Style.Font.Bold = true;
-                ws.Columns().AdjustToContents(1, Math.Min(sheet.Rows.Count, 200), 8, 60);
+                // Width from the text length (Excel's unit is one character); see FixedFontMetrics.
+                var sample = sheet.Rows.Take(200).ToList();
+                var columns = sample.Max(r => r.Length);
+                for (var c = 0; c < columns; c++)
+                {
+                    var longest = sample.Max(r => c < r.Length && r[c] is { } v ? v.Split('\n').Max(l => l.Length) : 0);
+                    ws.Column(c + 1).Width = Math.Clamp(longest + 2, 8, 60);
+                }
             }
         }
         if (sheets.Count == 0)

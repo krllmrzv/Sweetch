@@ -52,6 +52,17 @@ public static class SmokeTest
         var srt = Path.Combine(dir, "smoke.srt");
         File.WriteAllText(srt, "1\n00:00:01,000 --> 00:00:02,000\nAhoj\n");
         Run("subs.to.vtt", srt);
+        Run("subs.to.timed", Run("subs.to.ass", srt));
+
+        // YAML and TOML libraries in a trimmed build.
+        var json = Path.Combine(dir, "smoke.json");
+        File.WriteAllText(json, """{"name":"Žluťák","list":[{"id":1},{"id":2}]}""");
+        Run("data.to.json", Run("data.to.toml", Run("data.to.yaml", json)));
+        Run("data.to.xml", json);
+        Run("data.to.xlsx", json);
+        var vcf = Path.Combine(dir, "smoke.vcf");
+        File.WriteAllText(vcf, "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jan\r\nTEL:+420 1\r\nEND:VCARD\r\n");
+        Run("sheet.to.vcf", Run("vcf.to.csv", vcf));
 
         var zip = Run("pack.zip", png, csv);
         Run("archive.extract", zip);

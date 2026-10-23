@@ -1,12 +1,12 @@
 param(
-    [ValidatePattern('^\d+\.\d+(\.\d+){0,2}$')][string]$Version = '1.0',
+    [ValidatePattern('^\d+\.\d+(\.\d+){0,2}$')][string]$Version = '2.1.2',
     [string]$PublishDirectory = (Join-Path $PSScriptRoot '../publish'),
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '../artifacts'),
     [string]$Compiler
 )
 $ErrorActionPreference = 'Stop'
 $PublishDirectory = (Resolve-Path -LiteralPath $PublishDirectory).Path
-foreach ($file in @('Sweetch.exe', 'tools/pandoc.exe', 'LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+foreach ($file in @('Sweetch.exe', 'LICENSE', 'THIRD-PARTY-NOTICES.md')) {
     if (!(Test-Path -LiteralPath (Join-Path $PublishDirectory $file))) {
         throw "Published app is missing $file. Run build.ps1 first."
     }

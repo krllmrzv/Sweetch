@@ -26,7 +26,7 @@ internal sealed partial class SettingsWindow
     {
         PageHeader(root, PageName(SettingsPage.Presets),
             T("Slices of your own with fixed settings, like “JPG 70 % max 1920 px” or “MP4 720p”. They appear on the wheels and in watched folders.", "Свои секторы с фиксированными настройками, например «JPG 70 % макс. 1920 px» или «MP4 720p». Они появятся в меню и отслеживаемых папках."));
-        var add = Button(T("New preset", "Новый шаблон"), () => EditPreset(null), primary: true, glyph: "");
+        var add = Button(T("New preset", "Новый шаблон"), () => EditPreset(null), primary: true, glyph: Glyphs.Add);
         add.Margin = new Thickness(0, 14, 0, 6);
         root.Children.Add(add);
 
@@ -37,7 +37,7 @@ internal sealed partial class SettingsWindow
             {
                 var t = template;
                 root.Children.Add(Card(t.Name, PresetOperations.Summary(t),
-                    Button(T("Add", "Добавить"), () => AddPreset(t), glyph: ""), glyph: PresetGlyph(t)));
+                    Button(T("Add", "Добавить"), () => AddPreset(t), glyph: Glyphs.Add), glyph: PresetGlyph(t)));
             }
             return;
         }
@@ -48,8 +48,8 @@ internal sealed partial class SettingsWindow
             var p = preset;
             var wheel = p.Format == Preset.SameFormat ? WheelKind.Tools : WheelKind.Convert;
             var actions = new StackPanel { Orientation = Orientation.Horizontal };
-            actions.Children.Add(Button(T("Edit", "Изменить"), () => EditPreset(p), glyph: ""));
-            var delete = Button(T("Delete", "Удалить"), () => DeletePreset(p), glyph: "");
+            actions.Children.Add(Button(T("Edit", "Изменить"), () => EditPreset(p), glyph: Glyphs.Edit));
+            var delete = Button(T("Delete", "Удалить"), () => DeletePreset(p), glyph: Glyphs.Delete);
             delete.Margin = new Thickness(8, 0, 0, 0);
             actions.Children.Add(delete);
             var name = string.IsNullOrWhiteSpace(p.Name) ? PresetOperations.Summary(p) : p.Name;
@@ -109,7 +109,7 @@ internal sealed partial class SettingsWindow
     {
         PageHeader(root, PageName(SettingsPage.WatchFolders),
             T("Whatever lands in a chosen folder is processed on its own. For example screenshots to WebP, or phone photos from HEIC to JPG.", "Новые файлы в выбранной папке обрабатываются автоматически. Например, снимки экрана → WebP или фото с телефона HEIC → JPG."));
-        var add = Button(T("Add folder", "Добавить папку"), () => EditWatchFolder(null), primary: true, glyph: "");
+        var add = Button(T("Add folder", "Добавить папку"), () => EditWatchFolder(null), primary: true, glyph: Glyphs.Add);
         add.Margin = new Thickness(0, 14, 0, 6);
         root.Children.Add(add);
 
@@ -135,13 +135,13 @@ internal sealed partial class SettingsWindow
                 toggle.VerticalAlignment = VerticalAlignment.Center;
                 toggle.Margin = new Thickness(0, 0, 14, 0);
                 actions.Children.Add(toggle);
-                actions.Children.Add(Button(T("Edit", "Изменить"), () => EditWatchFolder(f), glyph: ""));
+                actions.Children.Add(Button(T("Edit", "Изменить"), () => EditWatchFolder(f), glyph: Glyphs.Edit));
                 var delete = Button(T("Delete", "Удалить"), () =>
                 {
                     _settings.WatchFolders.Remove(f);
                     Save();
                     Rebuild();
-                }, glyph: "");
+                }, glyph: Glyphs.Delete);
                 delete.Margin = new Thickness(8, 0, 0, 0);
                 actions.Children.Add(delete);
                 var name = Path.GetFileName(f.Path.TrimEnd('\\', '/'));
@@ -152,7 +152,7 @@ internal sealed partial class SettingsWindow
         root.Children.Add(SectionHeader(T("How it works", "Как это работает")));
         root.Children.Add(Card(T("Only new files", "Только новые файлы"),
             T("A file is processed once it has finished downloading or copying. What was already in the folder stays as it is. Sweetch's own results are not processed again.", "Файл обрабатывается после завершения загрузки или копирования. Уже находившиеся в папке файлы не меняются. Результаты Sweetch не обрабатываются повторно."),
-            null, glyph: ""));
+            null, glyph: Glyphs.Info));
         root.Children.Add(Card(T("Where results go", "Куда сохранять результаты"),
             T("As set in General → Save results. Originals are never changed. Folders are watched only while Sweetch is running.", "Согласно разделу «Основные → Сохранять результаты». Исходники не изменяются. Папки отслеживаются, пока запущен Sweetch."),
             null, glyph: Glyphs.Folder));

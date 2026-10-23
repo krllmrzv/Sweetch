@@ -6,3 +6,4 @@ artifacts/
 *.user
 .vs/
 TestResults/
+.dotnet/

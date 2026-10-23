@@ -34,6 +34,13 @@ public class IntegrationTests : IClassFixture<IntegrationTests.Samples>
                 image.Write(Path.Combine(Dir, "druhý.jpg"));
             }
             Files["png"] = png;
+            // Formats Magick.NET reads besides the common ones; edits are saved back in each of them.
+            foreach (var ext in new[] { "psd", "tga", "jxl", "jp2", "exr", "qoi", "dds", "ppm" })
+            {
+                using var image = new MagickImage(png);
+                Files[ext] = Path.Combine(Dir, $"obraz.{ext}");
+                image.Write(Files[ext]);
+            }
             Files["jpg"] = Path.Combine(Dir, "druhý.jpg");
             File.WriteAllText(Path.Combine(Dir, "vektor.svg"),
                 "<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><circle cx='32' cy='32' r='30' fill='orange'/></svg>");
@@ -78,6 +85,40 @@ public class IntegrationTests : IClassFixture<IntegrationTests.Samples>
 
             File.WriteAllText(Path.Combine(Dir, "titulky.srt"), "1\n00:00:01,000 --> 00:00:02,000\nAhoj\n");
             Files["srt"] = Path.Combine(Dir, "titulky.srt");
+            File.WriteAllText(Path.Combine(Dir, "anime.ass"), SubtitleBackend.ToAss(SubtitleBackend.Parse(File.ReadAllText(Files["srt"]))));
+            Files["ass"] = Path.Combine(Dir, "anime.ass");
+            File.WriteAllText(Path.Combine(Dir, "píseň.lrc"), "[ar:Kapela]\n[00:01.00]První řádek\n[00:03.20]Druhý\n");
+            Files["lrc"] = Path.Combine(Dir, "píseň.lrc");
+
+            File.WriteAllText(Path.Combine(Dir, "nastavení.json"), """{"name":"Sweetch","items":[{"id":1,"title":"Žluťák"},{"id":2,"title":"Kůň","tags":["a","b"]}]}""");
+            Files["json"] = Path.Combine(Dir, "nastavení.json");
+            File.WriteAllText(Path.Combine(Dir, "config.yaml"), "name: Sweetch\nversion: 2\nlist:\n  - a\n  - b\n");
+            Files["yaml"] = Path.Combine(Dir, "config.yaml");
+            File.WriteAllText(Path.Combine(Dir, "cargo.toml"), "[package]\nname = \"sweetch\"\nversion = \"2.0\"\n\n[[bin]]\nname = \"a\"\n");
+            Files["toml"] = Path.Combine(Dir, "cargo.toml");
+            File.WriteAllText(Path.Combine(Dir, "feed.xml"), "<feed lang=\"cs\"><entry><title>Ahoj</title></entry><entry><title>Svět</title></entry></feed>");
+            Files["xml"] = Path.Combine(Dir, "feed.xml");
+            File.WriteAllText(Path.Combine(Dir, "kontakty.vcf"), "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jan Novák\r\nTEL:+420 123\r\nEND:VCARD\r\n");
+            Files["vcf"] = Path.Combine(Dir, "kontakty.vcf");
+
+            // A letter with an inline picture and an attachment, and a saved web page that pulls in a picture by URL.
+            var letter = new MimeKit.BodyBuilder { HtmlBody = "<p>Ahoj, <b>světe</b></p><img src=\"cid:logo\">" };
+            letter.LinkedResources.Add("logo.png", File.ReadAllBytes(png)).ContentId = "logo";
+            letter.Attachments.Add("tabulka.csv", File.ReadAllBytes(Files["csv"]));
+            var mail = new MimeKit.MimeMessage { Subject = "Pozdrav", Body = letter.ToMessageBody() };
+            mail.From.Add(new MimeKit.MailboxAddress("Jan", "jan@example.com"));
+            mail.To.Add(new MimeKit.MailboxAddress("Eva", "eva@example.com"));
+            Files["eml"] = Path.Combine(Dir, "dopis.eml");
+            mail.WriteTo(Files["eml"]);
+            var page = new MimeKit.Multipart("related")
+            {
+                new MimeKit.TextPart("html") { Text = "<html><body><h1>Stránka</h1><img src=\"https://example.com/a.png\"></body></html>" },
+                new MimeKit.MimePart("image", "png") { Content = new MimeKit.MimeContent(File.OpenRead(png)), ContentLocation = new Uri("https://example.com/a.png") },
+            };
+            Files["mht"] = Path.Combine(Dir, "stránka.mht");
+            new MimeKit.MimeMessage { Body = page }.WriteTo(Files["mht"]);
+            Files["msg"] = Path.Combine(Dir, "outlook.msg");
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "Samples", "EmailWithAttachments.msg"), Files["msg"]);
 
             var folder = Path.Combine(Dir, "složka");
             Directory.CreateDirectory(Path.Combine(folder, "pod"));
@@ -106,7 +147,32 @@ public class IntegrationTests : IClassFixture<IntegrationTests.Samples>
                 Files["mp3"] = Path.Combine(Dir, "zvuk2.mp3");
                 Ffmpeg("-f", "lavfi", "-i", "testsrc=size=80x60:rate=5:duration=1", Path.Combine(Dir, "animace.gif"));
                 Files["gif"] = Path.Combine(Dir, "animace.gif");
+                Ffmpeg("-i", Files["mp4"], "-i", Files["srt"], "-map", "0", "-map", "1", "-c", "copy", "-c:s", "srt", Path.Combine(Dir, "s titulky.mkv"));
+                Files["subs"] = Path.Combine(Dir, "s titulky.mkv");
+                Ffmpeg("-i", Files["mp4"], "-c", "copy", "-f", "mpegts", Path.Combine(Dir, "kamera.m2ts"));
+                Files["m2ts"] = Path.Combine(Dir, "kamera.m2ts");
+                Ffmpeg("-f", "lavfi", "-i", "sine=frequency=330:duration=1", "-c:a", "wavpack", Path.Combine(Dir, "bezztrát.wv"));
+                Files["wv"] = Path.Combine(Dir, "bezztrát.wv");
+                Ffmpeg("-f", "lavfi", "-i", "sine=frequency=550:duration=1", "-c:a", "ac3", Path.Combine(Dir, "kino.ac3"));
+                Files["ac3"] = Path.Combine(Dir, "kino.ac3");
             }
+            // Markup that only pandoc reads.
+            File.WriteAllText(Path.Combine(Dir, "článek.tex"), """
+                \documentclass{article}
+                \begin{document}
+                \section{Nadpis}
+                Příliš žluťoučký kůň.
+                \end{document}
+                """, new UTF8Encoding(false));
+            Files["tex"] = Path.Combine(Dir, "článek.tex");
+            File.WriteAllText(Path.Combine(Dir, "návod.rst"), "Nadpis\n======\n\n- jedna\n- dvě\n", new UTF8Encoding(false));
+            Files["rst"] = Path.Combine(Dir, "návod.rst");
+            File.WriteAllText(Path.Combine(Dir, "poznámky.org"), "* Nadpis\n** Úkol\nText.\n", new UTF8Encoding(false));
+            Files["org"] = Path.Combine(Dir, "poznámky.org");
+            File.WriteAllText(Path.Combine(Dir, "sešit.ipynb"),
+                "{\"cells\":[{\"cell_type\":\"markdown\",\"metadata\":{},\"source\":[\"# Nadpis\"]}],\"metadata\":{},\"nbformat\":4,\"nbformat_minor\":5}", new UTF8Encoding(false));
+            Files["ipynb"] = Path.Combine(Dir, "sešit.ipynb");
+
             if (Tools.Has(ExternalTool.Pandoc))
             {
                 var docx = Path.Combine(Dir, "text.docx");
@@ -146,7 +212,9 @@ public class IntegrationTests : IClassFixture<IntegrationTests.Samples>
     }
 
     public static TheoryData<string> SampleKeys() => new(
-        "png", "jpg", "svg", "pdf", "md", "html", "txt", "xlsx", "csv", "srt", "folder", "zip", "tgz", "mp4", "avi", "wav", "mp3", "gif", "docx", "pptx");
+        "png", "jpg", "svg", "pdf", "md", "html", "txt", "xlsx", "csv", "srt", "folder", "zip", "tgz", "mp4", "avi", "wav", "mp3", "gif", "docx", "pptx",
+        "psd", "tga", "jxl", "jp2", "exr", "qoi", "dds", "ppm", "subs", "m2ts", "wv", "ac3", "tex", "rst", "org", "ipynb",
+        "ass", "lrc", "json", "yaml", "toml", "xml", "vcf", "eml", "mht", "msg");
 
     [Theory]
     [MemberData(nameof(SampleKeys))]
@@ -180,9 +248,18 @@ public class IntegrationTests : IClassFixture<IntegrationTests.Samples>
                     Assert.Empty(Directory.GetFiles(outDir, "*.part.*"));
                     output.WriteLine($"ok   {op.Id} → {string.Join(", ", result.Outputs.Select(Path.GetFileName))}");
                 }
-                catch (ConversionException) when (key is "pdf" && !_s.PdfHasText && op.Id is "pdf.to.txt" or "pdf.to.md")
+                // Every text route (TXT, MD, and DOCX/HTML/EPUB once Pandoc is installed) needs a text layer.
+                catch (ConversionException ex) when (key is "pdf" && !_s.PdfHasText && ex.Message.Contains("contains no text"))
                 {
                     output.WriteLine($"ok   {op.Id} (expected: image-only PDF has no text)");
+                }
+                catch (ConversionException ex) when (op.Id == "sheet.to.vcf" && ex.Message.Contains("no name, phone or email"))
+                {
+                    output.WriteLine($"ok   {op.Id} (expected: not a contact list)");
+                }
+                catch (ConversionException ex) when (op.Id == "video.subtitles" && key != "subs" && ex.Message.Contains("no text subtitles"))
+                {
+                    output.WriteLine($"ok   {op.Id} (expected: no subtitles in this sample)");
                 }
                 catch (Exception ex)
                 {
@@ -247,5 +324,24 @@ public class IntegrationTests : IClassFixture<IntegrationTests.Samples>
         Assert.Equal("archiv2", Path.GetFileName(multi));
         Assert.True(File.Exists(Path.Combine(multi, "složka", "b.txt")));
         Assert.True(File.Exists(Path.Combine(multi, "poznámky.txt")));
+    }
+
+    [Fact]
+    public async Task Image_batch_runs_side_by_side_with_distinct_names()
+    {
+        var dir = Path.Combine(_s.Dir, "batch");
+        Directory.CreateDirectory(dir);
+        var items = new[] { "png", "jpg", "bmp", "gif", "tiff", "webp" }.Select(ext =>
+        {
+            var path = Path.Combine(dir, "same." + ext);
+            File.Copy(_s.Files["png"], path);
+            return new FileItem(path);
+        }).ToList();
+        var op = (PerFileOperation)Catalog.Build().Single(o => o.Id == "image.to.avif");
+        Assert.True(op.Parallelism >= 1);
+        var result = await op.ExecuteAsync(items, _s.Context(Path.Combine(dir, "out")));
+        Assert.Null(result.Message);
+        Assert.Equal(items.Count, result.Outputs.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(result.Outputs, o => Assert.True(File.Exists(o)));
     }
 }

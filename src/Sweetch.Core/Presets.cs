@@ -122,7 +122,8 @@ public static class PresetOperations
                     var format = p.Format == Preset.SameFormat ? ImageBackend.OutputFormatFor(item.Format) : p.Format;
                     return [await OutputPaths.ProduceAsync(ctx.OutputDirFor(item.Path), $"{item.BaseName} ({suffix})", format,
                         tmp => ImageBackend.PresetAsync(item.Path, tmp, format, p.Quality, p.MaxSide, p.Percent, p.Grayscale, p.StripMetadata, ctx.CancellationToken))];
-                }, subtitle: Summary(p)),
+                }, subtitle: Summary(p))
+            { Parallelism = PerFileOperation.ImageParallelism },
             PresetKind.Video => new PerFileOperation("preset." + p.Id, wheel, name, Glyphs.Video, Formats.Video,
                 async (item, ctx, progress) => [await FfmpegBackend.TransformAsync(item, suffix, ctx, progress, VideoArgs(p), p.Format)],
                 subtitle: Summary(p))

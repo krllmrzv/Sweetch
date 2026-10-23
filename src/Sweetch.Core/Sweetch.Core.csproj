@@ -12,11 +12,17 @@
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <PackageReference Include="ExcelDataReader" Version="3.9.0" />
     <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="15.0.0" />
+    <PackageReference Include="MimeKitLite" Version="4.18.1" />
+    <PackageReference Include="MsgReader" Version="6.2.0" />
+    <!-- MsgReader → Maui.Graphics → Win2D, a 2 MB GPU canvas that reading letters never touches. -->
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" ExcludeAssets="all" PrivateAssets="all" NoWarn="NU1701" />
     <PackageReference Include="PdfPig" Version="0.1.16" />
     <PackageReference Include="PDFsharp" Version="6.2.4" />
     <PackageReference Include="PDFtoImage" Version="5.2.0" />
     <PackageReference Include="SharpCompress" Version="0.50.5" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+    <PackageReference Include="Tomlyn" Version="2.10.1" />
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
 </Project>

@@ -58,6 +58,11 @@ internal sealed partial class SettingsWindow : Window
         Background = Theme.Page;
         FontFamily = Theme.UiFont;
         Build();
+        _scroll.SizeChanged += (_, _) =>
+        {
+            if (_page == SettingsPage.Wheels && WheelsFit != _wheelsWide)
+                Rebuild();
+        };
         Action refresh = () => Dispatcher.BeginInvoke(Rebuild);
         if (Updater is not null)
             Updater.Changed += refresh;
@@ -114,12 +119,12 @@ internal sealed partial class SettingsWindow : Window
     private void Build()
     {
         var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(248) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(272) });
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         var sidebar = Sidebar();
         grid.Children.Add(sidebar);
 
-        var page = new StackPanel { Margin = new Thickness(40, 34, 40, 40), MaxWidth = _page == SettingsPage.Wheels ? 1100 : 760, HorizontalAlignment = HorizontalAlignment.Left };
+        var page = new StackPanel { Margin = new Thickness(44, 40, 44, 44), MaxWidth = _page == SettingsPage.Wheels ? 1100 : 820, HorizontalAlignment = HorizontalAlignment.Left };
         switch (_page)
         {
             case SettingsPage.General:
@@ -147,12 +152,67 @@ internal sealed partial class SettingsWindow : Window
                 AboutPage(page);
                 break;
         }
+        if (MissingToolsBanner() is { } banner)
+            page.Children.Insert(0, banner);
         _scroll.Content = page;
         // The scroll viewer outlives each rebuild (it keeps the position); free it from the old layout.
         (_scroll.Parent as Grid)?.Children.Remove(_scroll);
         Grid.SetColumn(_scroll, 1);
         grid.Children.Add(_scroll);
         Content = grid;
+    }
+
+    /// <summary>
+    /// A reddish strip on top of every page while a helper program is missing, with a shortcut to the page that
+    /// installs it. Closing it hides it for good.
+    /// </summary>
+    private Border? MissingToolsBanner()
+    {
+        var missing = Enum.GetValues<ExternalTool>().Where(t => !_tools.Has(t)).ToList();
+        if (missing.Count == 0 || _settings.HideMissingTools || _page == SettingsPage.Helpers)
+            return null;
+
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(Text(T("Install the helper programs", "Установите доп. программы"), 15, FontWeights.Bold));
+        var names = string.Join(", ", missing.Select(ToolLocator.DisplayName));
+        var detail = Text(T($"Some features need {names}.", $"Без {names} часть функций не работает."), 13.5, brush: Theme.Muted);
+        detail.Margin = new Thickness(0, 3, 0, 0);
+        text.Children.Add(detail);
+
+        var close = Icon(Glyphs.Close, 18, Theme.Muted);
+        close.Cursor = Cursors.Hand;
+        close.ToolTip = T("Don't show again", "Больше не показывать");
+        close.Margin = new Thickness(14, 0, 0, 0);
+        close.VerticalAlignment = VerticalAlignment.Center;
+        close.MouseLeftButtonUp += (_, _) =>
+        {
+            _settings.HideMissingTools = true;
+            Save();
+            Rebuild();
+        };
+        var open = Button(T("Helper programs", "Доп. программы"), () => Page = SettingsPage.Helpers, primary: true, glyph: Glyphs.Extension);
+
+        var warning = Icon(Glyphs.Warning, 24, Theme.Error);
+        warning.Margin = new Thickness(0, 0, 14, 0);
+        warning.VerticalAlignment = VerticalAlignment.Center;
+        var row = new DockPanel();
+        DockPanel.SetDock(close, Dock.Right);
+        row.Children.Add(close);
+        DockPanel.SetDock(warning, Dock.Left);
+        row.Children.Add(warning);
+        DockPanel.SetDock(open, Dock.Right);
+        row.Children.Add(open);
+        row.Children.Add(text);
+        RightOrUnder(row, open, room: 300, beside: new Thickness(16, 0, 0, 0), under: new Thickness(0, 12, 0, 0));
+
+        return new Border
+        {
+            Background = Theme.Alert,
+            CornerRadius = new CornerRadius(CardRadius),
+            Padding = new Thickness(20, 16, 18, 16),
+            Margin = new Thickness(0, 0, 0, 28),
+            Child = row,
+        };
     }
 
     private static string PageName(SettingsPage page) => page switch
@@ -169,53 +229,54 @@ internal sealed partial class SettingsWindow : Window
 
     private static string PageGlyph(SettingsPage page) => page switch
     {
-        SettingsPage.General => "",
-        SettingsPage.Gestures => "",
-        SettingsPage.Wheels => "",
-        SettingsPage.Presets => "",
-        SettingsPage.WatchFolders => "",
-        SettingsPage.Quality => "",
-        SettingsPage.Helpers => "",
-        _ => "",
+        SettingsPage.General => Glyphs.Settings,
+        SettingsPage.Gestures => Glyphs.Keyboard,
+        SettingsPage.Wheels => Glyphs.Wheel,
+        SettingsPage.Presets => Glyphs.Bookmarks,
+        SettingsPage.WatchFolders => Glyphs.FolderOpen,
+        SettingsPage.Quality => Glyphs.Quality,
+        SettingsPage.Helpers => Glyphs.Extension,
+        _ => Glyphs.Info,
     };
 
     // ------------------------------------------------------------------ sidebar
 
+    internal static Image Logo(double size) => new()
+    {
+        Source = new BitmapImage(new Uri("pack://application:,,,/Assets/Sweetch.png")),
+        Width = size,
+        Height = size,
+    };
+
     private Border Sidebar()
     {
-        var dock = new DockPanel { Margin = new Thickness(18, 24, 18, 20) };
+        var dock = new DockPanel { Margin = new Thickness(14, 22, 14, 18) };
 
-        var brand = new DockPanel { Margin = new Thickness(8, 0, 0, 26) };
-        var logo = new Image
-        {
-            Source = new BitmapImage(new Uri("pack://application:,,,/Assets/Sweetch.png")),
-            Width = 40,
-            Height = 40,
-            Margin = new Thickness(0, 0, 12, 0),
-        };
+        var brand = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 0, 0, 22) };
+        var logo = Logo(42);
+        logo.Margin = new Thickness(0, 0, 12, 0);
         brand.Children.Add(logo);
-        var names = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        var name = Text("Sweetch", 19, FontWeights.SemiBold);
-        name.FontFamily = Theme.DisplayFont;
-        names.Children.Add(name);
-        names.Children.Add(Text(T("A new shape for your files.", "Новая форма ваших файлов."), 12, brush: Theme.Muted));
-        brand.Children.Add(names);
+        var name = Heading("Sweetch", 22);
+        name.VerticalAlignment = VerticalAlignment.Center;
+        Typo.TrimToCaps(name);
+        brand.Children.Add(name);
         DockPanel.SetDock(brand, Dock.Top);
         dock.Children.Add(brand);
 
-        var version = Text(T("Version ", "Версия ") + Shell.Updater.Current, 12, brush: Theme.Muted);
-        version.Margin = new Thickness(10, 12, 0, 0);
+        var version = Text(T("Version ", "Версия ") + Shell.Updater.Current, 12.5, FontWeights.Medium, Theme.Muted);
+        version.Margin = new Thickness(8, 12, 0, 0);
         DockPanel.SetDock(version, Dock.Bottom);
         dock.Children.Add(version);
-        var support = Button(T("Support the project", "Поддержать проект"), () => Page = SettingsPage.About, primary: true, glyph: "");
-        support.Margin = new Thickness(6, 10, 6, 8);
+        var support = SupportTile();
         DockPanel.SetDock(support, Dock.Bottom);
         dock.Children.Add(support);
 
         var nav = new StackPanel();
         foreach (var page in Enum.GetValues<SettingsPage>())
             nav.Children.Add(NavItem(page));
-        dock.Children.Add(nav);
+        // Scrolls (by wheel) when the window is too short for every page plus the support tile; a bar here would
+        // squeeze the page names.
+        dock.Children.Add(new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Content = nav, Margin = new Thickness(0, 0, 0, 12) });
 
         return new Border
         {
@@ -226,26 +287,55 @@ internal sealed partial class SettingsWindow : Window
         };
     }
 
+    /// <summary>The lime "Support the fork" block at the bottom of the sidebar; opens the About page.</summary>
+    private Border SupportTile()
+    {
+        var content = new StackPanel();
+        content.Children.Add(Icon(Glyphs.Heart, 28, Theme.OnKey));
+        var label = Heading(T("Support the fork", "Поддержать форк"), 16, Theme.OnKey);
+        label.Margin = new Thickness(0, 18, 0, 0);
+        content.Children.Add(label);
+        var by = Text(T($"{Brand.ForkAuthor}: redesign and speed-ups", $"{Brand.ForkAuthor}: редизайн и ускорение"), 12.5, FontWeights.SemiBold, Theme.OnKey);
+        by.Opacity = 0.7;
+        by.Margin = new Thickness(0, 4, 0, 0);
+        content.Children.Add(by);
+        var tile = new Border
+        {
+            Background = Theme.KeyBrush(ModifierKey.Alt, WheelKind.Actions),
+            CornerRadius = new CornerRadius(CardRadius),
+            Padding = new Thickness(16),
+            Cursor = Cursors.Hand,
+            Child = content,
+        };
+        tile.MouseEnter += (_, _) => tile.Opacity = 0.9;
+        tile.MouseLeave += (_, _) => tile.Opacity = 1;
+        tile.MouseLeftButtonUp += (_, _) => Page = SettingsPage.About;
+        return tile;
+    }
+
     private Border NavItem(SettingsPage page)
     {
         var active = page == _page;
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
-        row.Children.Add(new TextBlock
-        {
-            Text = PageGlyph(page),
-            FontFamily = Theme.Icons,
-            FontSize = 16,
-            Foreground = active ? Theme.Accent : Theme.Text,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 14, 0),
-        });
-        row.Children.Add(Text(PageName(page), 14, active ? FontWeights.SemiBold : FontWeights.Normal, wrap: false));
+        var foreground = active ? Theme.OnInk : Theme.Text;
+        var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        // Both trimmed to what is drawn (the icon's square, the text's capitals), so they centre on the same line.
+        var icon = Icon(PageGlyph(page), 22, foreground);
+        icon.Width = 24;
+        icon.Margin = new Thickness(0, 0, 13, 0);
+        Typo.TrimToEm(icon);
+        row.Children.Add(icon);
+        var label = Text(PageName(page), 15, FontWeights.SemiBold, foreground, wrap: false);
+        label.FontFamily = Theme.UiFont;
+        label.VerticalAlignment = VerticalAlignment.Center;
+        Typo.TrimToCaps(label);
+        row.Children.Add(label);
         var item = new Border
         {
-            Background = active ? Theme.AccentSoft : System.Windows.Media.Brushes.Transparent,
-            CornerRadius = new CornerRadius(9),
-            Padding = new Thickness(14, 10, 14, 10),
-            Margin = new Thickness(0, 0, 0, 3),
+            Background = active ? Theme.Ink : System.Windows.Media.Brushes.Transparent,
+            CornerRadius = new CornerRadius(14),
+            Height = 48,
+            Padding = new Thickness(14, 0, 14, 0),
+            Margin = new Thickness(0, 0, 0, 4),
             Cursor = Cursors.Hand,
             Child = row,
         };
@@ -260,11 +350,9 @@ internal sealed partial class SettingsWindow : Window
 
     private static void PageHeader(Panel page, string title, string subtitle)
     {
-        var t = Text(title, 28, FontWeights.SemiBold);
-        t.FontFamily = Theme.DisplayFont;
-        page.Children.Add(t);
-        var s = Text(subtitle, 13.5, brush: Theme.Muted);
-        s.Margin = new Thickness(0, 4, 0, 6);
+        page.Children.Add(Heading(title, 42));
+        var s = Text(subtitle, 15.5, FontWeights.Medium, Theme.Muted);
+        s.Margin = new Thickness(0, 10, 0, 6);
         page.Children.Add(s);
     }
 
@@ -287,7 +375,7 @@ internal sealed partial class SettingsWindow : Window
                     Title = T("Sweetch – settings", "Sweetch — настройки");
                     Rebuild();
                 }),
-            glyph: ""));
+            glyph: Glyphs.Language));
 
         root.Children.Add(SectionHeader(T("Appearance", "Оформление")));
         root.Children.Add(Card(T("Color theme", "Цветовая тема"), null,
@@ -301,7 +389,18 @@ internal sealed partial class SettingsWindow : Window
                     Theme.Refresh();
                     Background = Theme.Page;
                     Rebuild();
-                }), glyph: ""));
+                }), glyph: Glyphs.Palette));
+        root.Children.Add(Card(T("Colour scheme", "Цветовая схема"),
+            T("Low contrast swaps the bright colours for quiet tints.", "Низкий контраст заменяет яркие цвета спокойными оттенками."),
+            Segmented(
+                [(T("Bright", "Яркая"), false), (T("Low contrast", "Низкий контраст"), true)],
+                _settings.LowContrast, value =>
+                {
+                    _settings.LowContrast = value;
+                    Save();
+                    Theme.LowContrast = value;
+                    Rebuild();
+                }), glyph: Glyphs.Contrast));
 
         root.Children.Add(SectionHeader(T("Results", "Результаты")));
         var folderLine = Text(_settings.OutputDirectory ?? "", 12, brush: Theme.Muted, wrap: false);
@@ -336,24 +435,38 @@ internal sealed partial class SettingsWindow : Window
             {
                 _settings.RevealResult = v;
                 Save();
-            }), glyph: ""));
+            }), glyph: Glyphs.FolderOpen));
+        var apps = new TextBox { Text = string.Join(", ", _settings.DragApps), TextWrapping = TextWrapping.Wrap, VerticalContentAlignment = VerticalAlignment.Center };
+        apps.LostFocus += (_, _) =>
+        {
+            _settings.DragApps = [.. apps.Text.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+            Save();
+        };
+        var appsBelow = new StackPanel();
+        appsBelow.Children.Add(apps);
+        root.Children.Add(Card(T("Open the wheel when dragging from", "Открывать колесо при перетаскивании из"),
+            T("Program names (as in Task Manager → Details, without .exe), comma-separated. Empty: from anywhere.", "Имена программ (как в Диспетчере задач → «Подробности», без .exe) через запятую. Пусто — откуда угодно."),
+            null, appsBelow, Glyphs.FolderOpen));
 
         root.Children.Add(SectionHeader(T("System", "Система")));
         root.Children.Add(Card(T("Start when I sign in", "Запускать при входе в систему"), null,
-            Toggle(ShellIntegration.IsAutostartEnabled, v => Apply(() => ShellIntegration.SetAutostart(v))), glyph: ""));
+            Toggle(ShellIntegration.IsAutostartEnabled, v => Apply(() => ShellIntegration.SetAutostart(v))), glyph: Glyphs.Power));
         root.Children.Add(Card(T("File Explorer context menu", "Контекстное меню Проводника"), T("A “Sweetch…” item on right-click", "Пункт «Sweetch…» при нажатии правой кнопкой"),
-            Toggle(ShellIntegration.IsContextMenuEnabled, v => Apply(() => ShellIntegration.SetContextMenu(v))), glyph: ""));
+            Toggle(ShellIntegration.IsContextMenuEnabled, v => Apply(() => ShellIntegration.SetContextMenu(v))), glyph: Glyphs.OpenLink));
+        root.Children.Add(Card(T("Check for updates", "Проверять обновления"), T("Asks GitHub for a new release every few hours and offers to install it", "Раз в несколько часов смотрит новый релиз на GitHub и предлагает установить"),
+            Toggle(_settings.AutoUpdateCheck, v =>
+            {
+                _settings.AutoUpdateCheck = v;
+                Save();
+            }), glyph: Glyphs.Update));
     }
 
     private void GesturesPage(Panel root)
     {
         PageHeader(root, PageName(SettingsPage.Gestures), T("Which key opens which wheel, and a shortcut without the mouse.", "Клавиши открытия меню и сочетание для работы без мыши."));
 
-        root.Children.Add(SectionHeader(T("Gesture", "Жест")));
-        root.Children.Add(Card(
-            T("Grab a file and tap a key while dragging", "Возьмите файл и нажмите клавишу при перетаскивании"),
-            T("A wheel opens; drop the file on a slice. Drop in the middle to cancel. The same key again (or R) repeats the last action.", "Откроется меню — отпустите файл над сектором. Отпустите в центре для отмены. Повторное нажатие той же клавиши (или R) повторит последнее действие."),
-            null, glyph: Glyphs.Extract));
+        // One tile per wheel, in the colour of its key.
+        var tiles = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Margin = new Thickness(-6, 12, -6, -6) };
         foreach (var (wheel, description) in new[]
                  {
                      (WheelKind.Convert, T("Convert to another format", "Конвертация в другой формат")),
@@ -361,14 +474,37 @@ internal sealed partial class SettingsWindow : Window
                      (WheelKind.Actions, T("Copy, move, path, terminal, share…", "Копирование, перемещение, путь, терминал, отправка…")),
                  })
         {
-            root.Children.Add(Card(AppSettings.WheelName(wheel), description, KeyChooser(wheel), glyph: WheelGlyph(wheel)));
+            var key = _settings.KeyFor(wheel);
+            var footer = new DockPanel { LastChildFill = false };
+            var chooser = KeyChooser(wheel);
+            DockPanel.SetDock(chooser, Dock.Left);
+            footer.Children.Add(chooser);
+            var icon = Icon(WheelGlyph(wheel), 52, Theme.OnKey);
+            icon.VerticalAlignment = VerticalAlignment.Bottom;
+            Typo.TrimToEm(icon);
+            DockPanel.SetDock(icon, Dock.Right);
+            footer.Children.Add(icon);
+            var tile = Tile(Theme.KeyBrush(key, wheel), AppSettings.WheelName(wheel), description, footer, height: 250);
+            tile.Margin = new Thickness(6);
+            if (key == ModifierKey.None)
+                tile.Opacity = 0.55;
+            tiles.Children.Add(tile);
         }
+        // Three across when there is room, otherwise stacked, so the key picker and icon never clip.
+        tiles.SizeChanged += (_, e) => tiles.Columns = e.NewSize.Width < 660 ? 1 : 3;
+        root.Children.Add(tiles);
+
+        root.Children.Add(SectionHeader(T("Gesture", "Жест")));
+        root.Children.Add(Card(
+            T("Grab a file and tap a key while dragging", "Возьмите файл и нажмите клавишу при перетаскивании"),
+            T("A wheel opens; drop the file on a slice. Drop in the middle to cancel. The same key again (or R) repeats the last action.", "Откроется меню — отпустите файл над сектором. Отпустите в центре для отмены. Повторное нажатие той же клавиши (или R) повторит последнее действие."),
+            null, glyph: Glyphs.Drag));
         root.Children.Add(Card(T("Pause gestures", "Приостановить жесты"), T("The wheel won’t open while dragging.", "Меню не открывается при перетаскивании."),
             Toggle(_settings.Paused, v =>
             {
                 _settings.Paused = v;
                 Save();
-            }), glyph: ""));
+            }), glyph: Glyphs.Pause));
 
         root.Children.Add(SectionHeader(T("Keyboard", "Клавиатура")));
         root.Children.Add(Card(T("Shortcut for the File Explorer selection", "Сочетание для выбранных в Проводнике файлов"),
@@ -383,14 +519,14 @@ internal sealed partial class SettingsWindow : Window
                     _settings.Hotkey = value;
                     Save();
                 })),
-            glyph: ""));
+            glyph: Glyphs.Keyboard));
     }
 
     private static string WheelGlyph(WheelKind wheel) => wheel switch
     {
-        WheelKind.Convert => "",
-        WheelKind.Tools => "",
-        _ => "",
+        WheelKind.Convert => Glyphs.Convert,
+        WheelKind.Tools => Glyphs.Tools,
+        _ => Glyphs.Actions,
     };
 
     private void QualityPage(Panel root)
@@ -411,16 +547,118 @@ internal sealed partial class SettingsWindow : Window
         PageHeader(root, PageName(SettingsPage.Helpers), T("Programs Sweetch uses for audio, video and documents.", "Программы для обработки аудио, видео и документов в Sweetch."));
         root.Children.Add(SectionHeader(T("Built in", "Встроено")));
         root.Children.Add(Card(T("Built in", "Встроено"),
-            T("Images, PDFs, spreadsheets, subtitles and archives. Pandoc for documents is included. Audio and video need FFmpeg; some Office conversions need LibreOffice.", "Изображения, PDF, таблицы, субтитры и архивы. Pandoc для документов уже включён. Для аудио и видео нужен FFmpeg; для части операций Office — LibreOffice."),
+            T("Images, PDFs, spreadsheets, subtitles and archives. Documents need Pandoc and audio and video need FFmpeg: both download the first time they're needed. Some Office conversions need LibreOffice.", "Изображения, PDF, таблицы, субтитры и архивы. Для документов нужен Pandoc, для аудио и видео — FFmpeg: оба скачиваются при первой необходимости. Для части операций Office — LibreOffice."),
             Button(T("Check again", "Проверить снова"), () =>
             {
                 _tools.Refresh();
                 Rebuild();
-            }, glyph: ""),
-            glyph: ""));
+            }, glyph: Glyphs.Refresh),
+            glyph: Glyphs.Extension));
         root.Children.Add(SectionHeader(T("Helper programs", "Вспомогательные программы")));
-        foreach (var tool in Enum.GetValues<ExternalTool>())
-            root.Children.Add(ToolCard(tool));
+
+        // Which program a format needs: the cards below narrow down while typing.
+        var search = TextField(_toolQuery, 40);
+        search.Background = System.Windows.Media.Brushes.Transparent; // the rounded border behind it gives the colour
+        var hint = Text(T("Find a format, e.g. mp4 or .docx", "Найти формат, например mp4 или .docx"), 14.5, brush: Theme.Muted);
+        hint.Margin = new Thickness(14, 0, 0, 0);
+        hint.VerticalAlignment = VerticalAlignment.Center;
+        hint.IsHitTestVisible = false;
+        var box = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+        box.Children.Add(new Border { CornerRadius = new CornerRadius(12), Background = Theme.Track, Child = search, ClipToBounds = true });
+        box.Children.Add(hint);
+        root.Children.Add(box);
+        var list = new StackPanel();
+        root.Children.Add(list);
+        void Show()
+        {
+            hint.Visibility = search.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            list.Children.Clear();
+            var query = search.Text.Trim();
+            var format = query.Length == 0 ? null : ToolCoverage.Normalize(query);
+            var needed = format is null ? null : ToolCoverage.For(Coverage, format);
+            if (format is not null)
+            {
+                var known = Formats.All.Contains(format);
+                var answer = Text(needed!.Count > 0
+                    ? T($"{Formats.Display(format)} works with: {string.Join(", ", needed.Select(ToolLocator.DisplayName))}", $"С {Formats.Display(format)} работают: {string.Join(", ", needed.Select(ToolLocator.DisplayName))}")
+                    : known ? T($"{Formats.Display(format)} works without helper programs.", $"{Formats.Display(format)} работает без доп. программ.")
+                    : T($"Sweetch doesn't know {Formats.Display(format)} yet.", $"Sweetch пока не знает формат {Formats.Display(format)}."), 14.5, FontWeights.SemiBold);
+                answer.Margin = new Thickness(4, 0, 0, 12);
+                list.Children.Add(answer);
+            }
+            foreach (var tool in Enum.GetValues<ExternalTool>())
+            {
+                if (needed is null || needed.Contains(tool))
+                    list.Children.Add(ToolCard(tool, format));
+            }
+        }
+        search.TextChanged += (_, _) =>
+        {
+            _toolQuery = search.Text;
+            Show();
+        };
+        Show();
+    }
+
+    private string _toolQuery = "";
+    private readonly HashSet<ExternalTool> _expandedTools = [];
+
+    /// <summary>For the self-test screenshots: a search typed in and one program's list opened.</summary>
+    internal void PreviewTools(string query, ExternalTool expand)
+    {
+        _toolQuery = query;
+        _expandedTools.Add(expand);
+        Rebuild();
+    }
+
+    // Worked out once per language (labels are translated): every operation on every format, with each program present and absent.
+    private static readonly Dictionary<Language, IReadOnlyDictionary<ExternalTool, IReadOnlyList<ToolCoverage.Group>>> CoverageByLanguage = [];
+
+    private static IReadOnlyDictionary<ExternalTool, IReadOnlyList<ToolCoverage.Group>> Coverage =>
+        CoverageByLanguage.TryGetValue(Loc.Current, out var known) ? known
+            : CoverageByLanguage[Loc.Current] = ToolCoverage.Build(Sweetch.Core.Operations.Catalog.Build());
+
+    /// <summary>"Formats and features": per group of formats, what the program converts them to and which tools it adds.</summary>
+    private FrameworkElement ToolDetails(ExternalTool tool, string? format)
+    {
+        var expanded = format is not null || _expandedTools.Contains(tool);
+        var panel = new StackPanel { Margin = new Thickness(44, 12, 0, 0) };
+        var toggle = new TextBlock
+        {
+            Text = (expanded ? "▴ " : "▾ ") + T("Formats and features", "Форматы и функции"),
+            FontSize = 13.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Theme.Muted,
+            Cursor = System.Windows.Input.Cursors.Hand,
+        };
+        toggle.MouseLeftButtonUp += (_, _) =>
+        {
+            if (!_expandedTools.Remove(tool))
+                _expandedTools.Add(tool);
+            Rebuild();
+        };
+        if (format is null)
+            panel.Children.Add(toggle);
+        if (!expanded)
+            return panel;
+        foreach (var group in Coverage[tool].Where(g => format is null || g.Formats.Contains(format)))
+        {
+            var formats = Text(string.Join(", ", group.Formats.Select(Formats.Display)), 14, FontWeights.Bold);
+            formats.Margin = new Thickness(0, 10, 0, 2);
+            formats.TextWrapping = TextWrapping.Wrap;
+            panel.Children.Add(formats);
+            void Line(string label, IReadOnlyList<string> items)
+            {
+                if (items.Count == 0)
+                    return;
+                var line = Text($"{label}: {string.Join(", ", items)}", 13.5, brush: Theme.Muted);
+                line.TextWrapping = TextWrapping.Wrap;
+                panel.Children.Add(line);
+            }
+            Line(T("Convert to", "Конвертация в"), group.Converts);
+            Line(T("Tools", "Инструменты"), group.Tools);
+        }
+        return panel;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -432,7 +670,7 @@ internal sealed partial class SettingsWindow : Window
         return element;
     }
 
-    private Border KeyChooser(WheelKind wheel) => Segmented(
+    private Border KeyChooser(WheelKind wheel) => Dropdown(
         [("Shift", ModifierKey.Shift), ("Ctrl", ModifierKey.Ctrl), ("Alt", ModifierKey.Alt), (T("Off", "Выкл."), ModifierKey.None)],
         _settings.KeyFor(wheel),
         key =>
@@ -489,14 +727,9 @@ internal sealed partial class SettingsWindow : Window
         }
     }
 
-    private Border ToolCard(ExternalTool tool)
+    private Border ToolCard(ExternalTool tool, string? format = null)
     {
         var path = _tools.Find(tool);
-        if (tool == ExternalTool.Pandoc)
-            return Card("Pandoc 3.12.1", path is null
-                ? T("Extract the entire Sweetch archive, including the tools folder.", "Распакуйте архив Sweetch целиком, включая папку tools.")
-                : T("Included with Sweetch. Document conversions work without downloading Pandoc.", "Включён в Sweetch. Конвертация документов работает без скачивания Pandoc."),
-                Badge(path is null ? T("missing", "отсутствует") : T("included", "в комплекте"), path is not null), glyph: Glyphs.Document);
         var description = path ?? tool switch
         {
             ExternalTool.Ffmpeg => T("Audio and video", "Аудио и видео"),
@@ -518,7 +751,7 @@ internal sealed partial class SettingsWindow : Window
                 {
                     if (await DownloadTool(tool))
                         Rebuild();
-                }, primary: true, glyph: "")
+                }, primary: true, glyph: Glyphs.Download)
                 : Button(T("Install", "Установить"), () =>
             {
                 try
@@ -531,7 +764,7 @@ internal sealed partial class SettingsWindow : Window
                 {
                     MessageBox.Show(this, ex.Message, "Sweetch", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
-            }, primary: true, glyph: "");
+            }, primary: true, glyph: Glyphs.Download);
             install.Margin = new Thickness(10, 0, 0, 0);
             right.Children.Add(install);
         }
@@ -541,6 +774,6 @@ internal sealed partial class SettingsWindow : Window
             ExternalTool.Pandoc => Glyphs.Document,
             _ => Glyphs.Table,
         };
-        return Card(ToolLocator.DisplayName(tool), description, right, glyph: glyph);
+        return Card(ToolLocator.DisplayName(tool), description, right, ToolDetails(tool, format), glyph: glyph);
     }
 }

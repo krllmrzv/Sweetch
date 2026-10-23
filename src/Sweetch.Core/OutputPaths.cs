@@ -4,6 +4,8 @@ namespace Sweetch.Core;
 
 public static class OutputPaths
 {
+    private static readonly Lock NameLock = new();
+
     /// <summary>"dir/name.ext", or "dir/name (2).ext" … if that already exists.</summary>
     public static string Unique(string dir, string baseName, string ext)
     {
@@ -30,9 +32,13 @@ public static class OutputPaths
             await produce(temp).ConfigureAwait(false);
             if (!File.Exists(temp))
                 throw new ConversionException(T("The conversion produced no output.", "Конвертация не создала выходных файлов."));
-            var final = Unique(dir, baseName, ext);
-            File.Move(temp, final);
-            return final;
+            // Files of a batch may finish together: pick the name and take it in one step.
+            lock (NameLock)
+            {
+                var final = Unique(dir, baseName, ext);
+                File.Move(temp, final);
+                return final;
+            }
         }
         finally
         {

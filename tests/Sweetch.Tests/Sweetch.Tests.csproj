@@ -27,6 +27,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Outlook letter from MSGReader's tests (MIT): MSG can't be written without Outlook. -->
+    <None Include="Samples\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Sweetch.Core\Sweetch.Core.csproj" />
   </ItemGroup>
 

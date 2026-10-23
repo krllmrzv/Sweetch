@@ -29,7 +29,8 @@ internal sealed class TrayIcon : IDisposable
 
         _icon = new Forms.NotifyIcon
         {
-            Icon = new System.Drawing.Icon(stream),
+            // The small frame drawn for the tray, not the 32 px one scaled down.
+            Icon = new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize),
             Text = "Sweetch",
             ContextMenuStrip = menu,
             Visible = true,

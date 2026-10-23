@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0"
+  #define AppVersion "2.1.2"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\publish"
@@ -15,7 +15,7 @@ AppVersion={#AppVersion}
 AppVerName=Sweetch {#AppVersion}
 AppPublisher=mmmorozov
 AppPublisherURL=https://t.me/mmmorozov
-AppSupportURL=https://github.com/krllmrzv/Sweetch/issues
+AppSupportURL=https://github.com/chikirao/Sweetchiki/issues
 DefaultDirName={localappdata}\Programs\Sweetch
 DefaultGroupName=Sweetch
 DisableProgramGroupPage=yes
@@ -50,6 +50,14 @@ Name: "{userdesktop}\Sweetch"; Filename: "{app}\Sweetch.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Sweetch.exe"; Description: "{cm:LaunchProgram,Sweetch}"; Flags: nowait postinstall skipifsilent
+; An update from inside Sweetch runs this setup silently with /update=1: start the new version afterwards.
+Filename: "{app}\Sweetch.exe"; Parameters: "--updated"; Flags: nowait; Check: FromSweetch
 
 [UninstallRun]
 Filename: "{app}\Sweetch.exe"; Parameters: "--unregister"; Flags: runhidden waituntilterminated; RunOnceId: "Unregister"
+
+[Code]
+function FromSweetch: Boolean;
+begin
+  Result := ExpandConstant('{param:update|0}') = '1';
+end;

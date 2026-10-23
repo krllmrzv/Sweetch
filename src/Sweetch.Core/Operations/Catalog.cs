@@ -19,9 +19,30 @@ public static class Catalog
         AddSlides(ops);
         AddSpreadsheets(ops);
         AddSubtitles(ops);
+        AddData(ops);
+        AddMail(ops);
         AddArchives(ops);
+        foreach (var op in ops)
+            op.Rare = RareIds.Contains(op.Id);
         return ops;
     }
+
+    /// <summary>
+    /// Seldom chosen, so they wait on the wheel's other side: formats few programs open, exports for
+    /// specialists, second ways of doing what the front already does.
+    /// </summary>
+    private static readonly HashSet<string> RareIds =
+    [
+        "image.to.jxl", "image.to.bmp", "image.to.gif",
+        "audio.to.alac", "audio.to.wv", "audio.to.tta", "audio.to.ac3",
+        "video.to.avi", "video.to.apng",
+        "doc.to.tex", "doc.to.rst", "doc.to.typ", "doc.to.adoc", "doc.to.pptx", "doc.to.rtf", "doc.to.odt",
+        "pdf.to.tiff", "pdf.to.cbz", "pdf.to.html", "pdf.to.epub",
+        "sheet.to.html", "sheet.to.json", "sheet.to.vcf", "sheet.to.ods",
+        "slides.to.odp", "slides.to.docx",
+        "subs.to.ass", "subs.to.lrc",
+        "data.to.toml", "data.to.jsonl",
+    ];
 
     /// <summary>Operations for a wheel that apply to the dropped items and whose tools are installed.</summary>
     public static IReadOnlyList<Operation> For(IEnumerable<Operation> all, WheelKind wheel, IReadOnlyList<FileItem> items, ToolLocator tools) =>
@@ -35,7 +56,8 @@ public static class Catalog
         {
             ops.Add(new PerFileOperation($"image.to.{target}", WheelKind.Convert, Formats.Display(target), Glyphs.Photo, Formats.ImageInputs,
                 async (item, ctx, _) => [await Produce(item, ctx, target, tmp => ImageBackend.ConvertAsync(item.Path, tmp, target, ctx.Settings, ctx.CancellationToken))],
-                targetFormat: target, subtitle: target == "pdf" ? T("document", "документ") : null));
+                targetFormat: target, subtitle: target == "pdf" ? T("document", "документ") : null)
+            { Parallelism = PerFileOperation.ImageParallelism });
         }
         ops.Add(new PerFileOperation("gif.to.mp4", WheelKind.Convert, "MP4", Glyphs.Video, ["gif"],
             async (item, ctx, p) => [await FfmpegBackend.ConvertAsync(item, "mp4", ctx, p)], subtitle: T("video", "видео"))
@@ -63,7 +85,8 @@ public static class Catalog
     private static void ImageTool(List<Operation> ops, string id, string label, string glyph, string suffix, Func<FileItem, OperationContext, string, Task> run, string? subtitle = null) =>
         ops.Add(new PerFileOperation(id, WheelKind.Tools, label, glyph, Formats.ImageInputs,
             async (item, ctx, _) => [await OutputPaths.ProduceAsync(ctx.OutputDirFor(item.Path), $"{item.BaseName} ({suffix})",
-                ImageBackend.OutputFormatFor(item.Format), tmp => run(item, ctx, tmp))], subtitle: subtitle));
+                ImageBackend.OutputFormatFor(item.Format), tmp => run(item, ctx, tmp))], subtitle: subtitle)
+        { Parallelism = PerFileOperation.ImageParallelism });
 
     private static void ImageEdit(List<Operation> ops, string id, string label, string glyph, string? subtitle, string suffix, Action<ImageMagick.MagickImage> edit) =>
         ImageTool(ops, id, label, glyph, suffix, (item, ctx, tmp) => ImageBackend.EditAsync(item.Path, tmp, edit, ctx.Settings.JpegQuality, ctx.CancellationToken), subtitle);
@@ -104,9 +127,10 @@ public static class Catalog
     {
         foreach (var target in Formats.VideoOutputs)
         {
-            ops.Add(new PerFileOperation($"video.to.{target}", WheelKind.Convert, Formats.Display(target), target == "mp3" ? Glyphs.Audio : Glyphs.Video, Formats.Video,
+            var audioOnly = target is "mp3" or "m4a";
+            ops.Add(new PerFileOperation($"video.to.{target}", WheelKind.Convert, Formats.Display(target), audioOnly ? Glyphs.Audio : Glyphs.Video, Formats.Video,
                 async (item, ctx, p) => [await FfmpegBackend.ConvertAsync(item, target, ctx, p)], targetFormat: target,
-                subtitle: target switch { "mp3" => T("audio only", "только звук"), "gif" => T("animation", "анимация"), _ => null })
+                subtitle: target switch { _ when audioOnly => T("audio only", "только звук"), "gif" => T("animation", "анимация"), "hevc" => T("H.265, smaller", "H.265, меньше"), _ => null })
             { Requires = [ExternalTool.Ffmpeg] });
         }
 
@@ -127,6 +151,13 @@ public static class Catalog
             outputFormat: _ => "mp4", subtitle: "2×");
         Ffmpeg(ops, "video.thumbnail", T("Thumbnail", "Миниатюра"), Glyphs.Camera, Formats.Video, T("thumbnail", "миниатюра"),
             (item, ctx) => ["-vf", "thumbnail=150", "-frames:v", "1", "-update", "1"], outputFormat: _ => "png", subtitle: T("PNG frame", "кадр PNG"));
+        // The SRT for players, and a text with a time on every line for reading or quoting.
+        ops.Add(new PerFileOperation("video.subtitles", WheelKind.Tools, T("Subtitles", "Субтитры"), Glyphs.Subtitles, Formats.Video, async (item, ctx, p) =>
+        {
+            var srt = await FfmpegBackend.TransformAsync(item, T("subtitles", "субтитры"), ctx, p, ["-map", "0:s:0", "-c:s", "srt"], "srt");
+            return [srt, await SubtitleBackend.ConvertAsync(new FileItem(srt), "timed", new OperationContextOverride(ctx, Path.GetDirectoryName(srt)!).Context, Formats.BaseNameOf(srt))];
+        }, subtitle: T("SRT and TXT", "SRT и TXT"))
+        { Requires = [ExternalTool.Ffmpeg] });
     }
 
     private static string[] H264(int crf, string preset, string? filter, string? audioBitrate)
@@ -192,6 +223,11 @@ public static class Catalog
             ops.Add(new PerFileOperation($"pdf.to.{text}", WheelKind.Convert, Formats.Display(text), Glyphs.Text, Formats.Pdf,
                 async (item, ctx, _) => [await PdfBackend.ToTextAsync(item, text, ctx)], subtitle: text == "md" ? "Markdown" : "text"));
         }
+        foreach (var bundle in new[] { "tiff", "cbz" })
+        {
+            ops.Add(new PerFileOperation($"pdf.to.{bundle}", WheelKind.Convert, Formats.Display(bundle), Glyphs.Library, Formats.Pdf,
+                async (item, ctx, p) => [await PdfBackend.ToBundleAsync(item, bundle, ctx, p)], subtitle: bundle == "cbz" ? T("comic book", "комикс") : T("all pages", "все страницы")));
+        }
         ops.Add(PdfDoc("html", "web"));
         ops.Add(PdfDoc("epub", T("e-book", "электронная книга")));
 
@@ -204,6 +240,16 @@ public static class Catalog
             }));
         ops.Add(new PerFileOperation("pdf.split", WheelKind.Tools, T("Split", "Разделить"), Glyphs.Split, Formats.Pdf,
             (item, ctx, p) => PdfBackend.SplitAsync(item, ctx, p), subtitle: T("into pages", "на страницы")));
+        ops.Add(new PerFileOperation("pdf.pages", WheelKind.Tools, T("Pages", "Страницы"), Glyphs.Page, Formats.Pdf,
+            async (item, ctx, _) =>
+            {
+                var pages = ctx.Param("pages");
+                return [await OutputPaths.ProduceAsync(ctx.OutputDirFor(item.Path), $"{item.BaseName} ({T("pages", "стр.")} {pages.Replace(" ", "")})", "pdf",
+                    tmp => Task.Run(() => PdfBackend.ExtractPages(item.Path, tmp, pages), ctx.CancellationToken))];
+            }, subtitle: T("pick some", "выбрать"))
+        {
+            Parameters = [new ParameterSpec("pages", T("Pages", "Страницы"), "1", T("e.g. 1-3, 5, 8-", "например, 1-3, 5, 8-"))],
+        });
         ops.Add(new PerFileOperation("pdf.rotate", WheelKind.Tools, T("Rotate", "Повернуть"), Glyphs.Rotate, Formats.Pdf,
             async (item, ctx, _) => [await OutputPaths.ProduceAsync(ctx.OutputDirFor(item.Path), $"{item.BaseName} ({T("rotated", "повёрнуто")})", "pdf",
                 tmp => Task.Run(() => PdfBackend.Rotate(item.Path, tmp, 90), ctx.CancellationToken))], subtitle: T("right", "вправо")));
@@ -225,7 +271,7 @@ public static class Catalog
         {
             ops.Add(new PerFileOperation($"doc.to.{target}", WheelKind.Convert, Formats.Display(target), Glyphs.Document, Formats.Documents,
                 async (item, ctx, _) => [await DocumentAsync(item, target, ctx)], targetFormat: target,
-                subtitle: target switch { "docx" => "Word", "md" => "Markdown", "epub" => T("e-book", "электронная книга"), "txt" => "text", "html" => "web", _ => null })
+                subtitle: target switch { "docx" => "Word", "md" => "Markdown", "epub" => T("e-book", "электронная книга"), "txt" => "text", "html" => "web", "tex" => "LaTeX", "rst" => "reStructuredText", "typ" => "Typst", "adoc" => "AsciiDoc", "pptx" => T("slides", "слайды"), _ => null })
             {
                 AvailableFor = (tools, item) => DocumentRoute(item.Format, target, tools) is not null,
             });
@@ -238,7 +284,7 @@ public static class Catalog
     {
         var pandoc = tools.Has(ExternalTool.Pandoc);
         var office = tools.Has(ExternalTool.LibreOffice);
-        bool pandocReads = Formats.PandocInputs.Contains(input), officeReads = input is "doc" or "docx" or "odt" or "rtf" or "txt" or "html";
+        bool pandocReads = Formats.PandocInputs.Contains(input), officeReads = Formats.OfficeDocuments.Contains(input);
         bool pandocWrites = target != "pdf", officeWrites = target is "pdf" or "docx" or "odt" or "txt" or "html" || (target == "rtf" && input != "html");
 
         // LibreOffice keeps layout better between word-processor formats; pandoc is better at everything else.
@@ -319,9 +365,11 @@ public static class Catalog
                             OutputPaths.TryDelete(Path.GetDirectoryName(pdf)!);
                         }
                     }
+                    if (target == "docx")
+                        return [await SlidesToDocxAsync(item, ctx)];
                     return [await OfficeBackend.ConvertAsync(item, target, ctx)];
-                }, targetFormat: target, subtitle: target is "png" or "jpg" ? T("all slides", "все слайды") : null)
-            { Requires = [ExternalTool.LibreOffice] });
+                }, targetFormat: target, subtitle: target switch { "png" or "jpg" => T("all slides", "все слайды"), "docx" => T("a slide per page", "слайд на страницу"), _ => null })
+            { Requires = target == "docx" ? [ExternalTool.LibreOffice, ExternalTool.Pandoc] : [ExternalTool.LibreOffice] });
         }
     }
 
@@ -350,9 +398,69 @@ public static class Catalog
     {
         foreach (var target in Formats.SubtitleOutputs)
         {
-            ops.Add(new PerFileOperation($"subs.to.{target}", WheelKind.Convert, Formats.Display(target), Glyphs.Subtitles, Formats.Subtitles,
+            ops.Add(new PerFileOperation($"subs.to.{target}", WheelKind.Convert, target == "timed" ? T("TXT + time", "TXT + время") : Formats.Display(target),
+                target is "txt" or "timed" ? Glyphs.Text : Glyphs.Subtitles, Formats.Subtitles,
                 async (item, ctx, _) => [await SubtitleBackend.ConvertAsync(item, target, ctx)], targetFormat: target,
-                subtitle: target == "txt" ? T("text only", "только текст") : null));
+                subtitle: target switch { "txt" => T("text only", "только текст"), "timed" => T("with timestamps", "с таймкодами"), "lrc" => T("lyrics", "текст песни"), _ => null }));
+        }
+        ops.Add(new PerFileOperation("subs.utf8", WheelKind.Tools, "UTF-8", Glyphs.Text, Formats.Subtitles,
+            async (item, ctx, _) => [await SubtitleBackend.ToUtf8Async(item, ctx)], subtitle: T("fix encoding", "исправить кодировку")));
+    }
+
+    // ---------------------------------------------------------------- data
+
+    private static void AddData(List<Operation> ops)
+    {
+        foreach (var target in Formats.DataOutputs)
+        {
+            var table = target is "csv" or "xlsx";
+            ops.Add(new PerFileOperation($"data.to.{target}", WheelKind.Convert, Formats.Display(target), table ? Glyphs.Table : Glyphs.Text, Formats.Data,
+                async (item, ctx, _) => [table ? await DataBackend.ToTableAsync(item, target, ctx) : await DataBackend.ConvertAsync(item, target, ctx)],
+                targetFormat: target, subtitle: table ? T("table", "таблица") : null));
+        }
+        foreach (var target in new[] { "csv", "xlsx" })
+        {
+            ops.Add(new PerFileOperation($"vcf.to.{target}", WheelKind.Convert, Formats.Display(target), Glyphs.Table, ["vcf"],
+                async (item, ctx, _) => [await DataBackend.ToTableAsync(item, target, ctx)], subtitle: T("contacts", "контакты")));
+        }
+        // Spreadsheets as records or contacts. ODS would need LibreOffice to read, so only what we read ourselves.
+        string[] readable = ["xlsx", "xlsm", "xls", "csv", "tsv"];
+        ops.Add(new PerFileOperation("sheet.to.json", WheelKind.Convert, "JSON", Glyphs.Text, readable,
+            async (item, ctx, _) => [await DataBackend.FromTableAsync(item, "json", ctx)], subtitle: T("records", "записи")));
+        ops.Add(new PerFileOperation("sheet.to.vcf", WheelKind.Convert, "VCF", Glyphs.Person, readable,
+            async (item, ctx, _) => [await DataBackend.FromTableAsync(item, "vcf", ctx)], subtitle: T("contacts", "контакты")));
+    }
+
+    // ---------------------------------------------------------------- mail and saved pages
+
+    private static void AddMail(List<Operation> ops)
+    {
+        ops.Add(new PerFileOperation("mail.to.html", WheelKind.Convert, "HTML", Glyphs.Document, Formats.Mail,
+            async (item, ctx, _) => [await MailBackend.ToHtmlAsync(item, ctx)], subtitle: T("one page", "одна страница")));
+        ops.Add(new PerFileOperation("mail.to.pdf", WheelKind.Convert, "PDF", Glyphs.Document, Formats.Mail,
+            async (item, ctx, _) => [await MailBackend.ToPdfAsync(item, ctx)])
+        { Requires = [ExternalTool.LibreOffice] });
+        ops.Add(new PerFileOperation("msg.to.eml", WheelKind.Convert, "EML", Glyphs.Send, ["msg"],
+            async (item, ctx, _) => [await MailBackend.ToEmlAsync(item, ctx)], subtitle: T("any mail app", "любая почта")));
+        ops.Add(new PerFileOperation("mail.attachments", WheelKind.Tools, T("Attachments", "Вложения"), Glyphs.Extract, ["eml", "msg"],
+            async (item, ctx, _) => [await MailBackend.SaveAttachmentsAsync(item, ctx)], subtitle: T("save all", "сохранить все")));
+    }
+
+    /// <summary>Slides to Word: each slide drawn as a picture on its own page (LibreOffice draws, pandoc builds the DOCX).</summary>
+    private static async Task<string> SlidesToDocxAsync(FileItem item, OperationContext ctx)
+    {
+        var pdf = await OfficeBackend.ConvertToTempAsync(ctx, item.Path, "pdf");
+        var temp = Path.GetDirectoryName(pdf)!;
+        try
+        {
+            var pages = await Task.Run(() => PdfBackend.RenderPagesToPng(pdf, temp, 150, ctx.CancellationToken), ctx.CancellationToken);
+            var md = Path.Combine(temp, item.BaseName + ".md");
+            await File.WriteAllTextAsync(md, string.Join("\n\n\\newpage\n\n", pages.Select(p => $"![]({Path.GetFileName(p)}){{width=100%}}")), ctx.CancellationToken);
+            return await OutputPaths.ProduceAsync(ctx.OutputDirFor(item.Path), item.BaseName, "docx", tmp => PandocBackend.ConvertAsync(ctx, md, "md", tmp, "docx"));
+        }
+        finally
+        {
+            OutputPaths.TryDelete(temp);
         }
     }
 
@@ -370,10 +478,11 @@ public static class Catalog
 
         foreach (var (target, label) in new[] { ("zip", "ZIP"), ("tar.gz", "TAR.GZ") })
         {
-            ops.Add(new BatchOperation($"pack.{target}", WheelKind.Tools, T("Archive", "В архив"), Glyphs.Pack, _ => true,
+            // The format goes in the name: both are on the wheel at once, and slices show no subtitle.
+            ops.Add(new BatchOperation($"pack.{target}", WheelKind.Tools, T($"To {label}", $"В {label}"), Glyphs.Pack, _ => true,
                 async (items, ctx) => [await OutputPaths.ProduceAsync(ctx.OutputDirFor(items[0].Path), ArchiveBackend.ArchiveNameFor(items), target,
                     tmp => ArchiveBackend.PackAsync(items.Select(i => i.Path).ToList(), tmp, target, ctx.CancellationToken))],
-                subtitle: label));
+                subtitle: T("archive", "архив")));
         }
     }
 }
