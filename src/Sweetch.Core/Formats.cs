@@ -31,7 +31,7 @@ public static class Formats
     /// <summary>Everything the image operations accept: regular images plus camera RAW.</summary>
     public static readonly HashSet<string> ImageInputs = new(Images.Concat(Raw), StringComparer.OrdinalIgnoreCase);
 
-    public static readonly HashSet<string> Audio = Set("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "aiff", "wma");
+    public static readonly HashSet<string> Audio = Set("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "weba", "aiff", "wma");
     public static readonly string[] AudioOutputs = ["mp3", "m4a", "wav", "flac", "ogg", "opus", "aiff"];
 
     public static readonly HashSet<string> Video = Set("mp4", "mov", "mkv", "webm", "avi", "wmv", "flv", "mpg", "mpeg", "3gp", "ts", "mts");
